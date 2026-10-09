@@ -43,7 +43,20 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Konfiguracja kodów PIN rejonów i serwisantów
+# Konfiguracja okręgów pocztowych (0-9)
+REGION_DEFINITIONS = [
+    {"kod": "0", "nazwa": "Rejon 0 (Warszawa / Mazowieckie)", "krotka": "Rejon 0 - Mazowieckie"},
+    {"kod": "2", "nazwa": "Rejon 2 (Lubelskie / Świętokrzyskie)", "krotka": "Rejon 2 - Lubelskie/Święt."},
+    {"kod": "6", "nazwa": "Rejon 6 (Wielkopolskie / Lubuskie)", "krotka": "Rejon 6 - Wielkopolskie"},
+    {"kod": "8", "nazwa": "Rejon 8 (Pomorskie / Kujawsko-Pomorskie)", "krotka": "Rejon 8 - Pomorskie/Kujawy"},
+    {"kod": "9", "nazwa": "Rejon 9 (Łódzkie)", "krotka": "Rejon 9 - Łódzkie"},
+    {"kod": "3", "nazwa": "Rejon 3 (Małopolskie / Podkarpackie)", "krotka": "Rejon 3 - Małopolskie/Podk."},
+    {"kod": "1", "nazwa": "Rejon 1 (Podlaskie / Warmińsko-Mazurskie)", "krotka": "Rejon 1 - Podlaskie/Warm."},
+    {"kod": "4", "nazwa": "Rejon 4 (Śląskie / Opolskie)", "krotka": "Rejon 4 - Śląskie/Opole"},
+    {"kod": "5", "nazwa": "Rejon 5 (Dolnośląskie)", "krotka": "Rejon 5 - Dolnośląskie"},
+    {"kod": "7", "nazwa": "Rejon 7 (Zachodniopomorskie)", "krotka": "Rejon 7 - Zachodniopomorskie"},
+]
+
 PIN_CONFIG = {
     "1110": {"rejon_kod": "0", "nazwa_rejonu": "Rejon 0 (Warszawa / Mazowieckie)", "domyslny_serwisant": "Leszek"},
     "1111": {"rejon_kod": "2", "nazwa_rejonu": "Rejon 2 (Lubelskie / Świętokrzyskie)", "domyslny_serwisant": "Stanisław"},
@@ -205,26 +218,52 @@ if st.session_state.user_role == "koordynator":
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("📍 Rejony Pocztowe")
-    st.sidebar.caption("Liczba nowych zgłoszeń: **od wczoraj do dziś**")
+    st.sidebar.caption("Sortowanie wg **ilości oczekujących zgłoszeń**:")
 
-    yesterday_str = (datetime.date.today() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+    CUTOFF_DATE = "2026-10-08"
 
-    recent_mask = df['DATA ZGŁOSZENIA'].str[:10] >= yesterday_str
-    recent_df = df[recent_mask]
-    counts_recent = recent_df['Rejon Polski'].value_counts()
+    # Maska spraw oczekujących (niezakończonych i nieanulowanych)
+    is_pending_all = ~df['STATUS ZGŁOSZENIA'].str.lower().str.contains('zakończ|anulow', na=False)
 
-    wszystkie_znane_rejony = [f"Rejon {i}" for i in [0, 2, 6, 8, 9, 3, 1, 4, 5, 7]]
-    all_regions = ["Wszystkie rejony"] + wszystkie_znane_rejony
+    region_stats = []
+    for r_def in REGION_DEFINITIONS:
+        r_kod = r_def['kod']
+        mask_r = (
+            df['Rejon Polski'].str.contains(f"Rejon {r_kod}", case=False, na=False) |
+            df['Kod pocztowy'].str.startswith(r_kod)
+        )
+        total_in_r = mask_r.sum()
+        recent_mask = df['DATA ZGŁOSZENIA'].str[:10] >= CUTOFF_DATE
+recent_in_r = (mask_r & (df['DATA ZGŁOSZENIA'].str[:10] >= CUTOFF_DATE)).sum()
+        region_stats.append({
+            'kod': r_kod,
+            'krotka': r_def['krotka'],
+            'pelna': r_def['nazwa'],
+            'pending': pending_in_r,
+            'recent': recent_in_r,
+            'total': total_in_r
+        })
 
-    region_options = {"Wszystkie rejony": f"🌐 Wszystkie ({len(recent_df)} od wczoraj)"}
-    for r in wszystkie_znane_rejony:
-        c = counts_recent.get(r, 0)
-        region_options[r] = f"{r} ({c})"
+    # Sortowanie rejonów MALEJĄCO wg liczby oczekujących spraw
+    region_stats_sorted = sorted(region_stats, key=lambda x: x['pending'], reverse=True)
 
-    selected_region_raw = st.sidebar.radio(
-        "Filtruj wg rejonu:",
-        options=all_regions,
-        format_func=lambda x: region_options.get(x, x)
+    all_region_keys = ["ALL"] + [r['kod'] for r in region_stats_sorted]
+    total_pending_all = is_pending_all.sum()
+    total_recent_all = (df['DATA ZGŁOSZENIA'].str[:10] >= yesterday_str).sum()
+
+    region_labels = {
+        "ALL": f"🌐 Wszystkie rejony ({total_pending_all} oczekujących | {total_recent_all} nowych)"
+    }
+    for r in region_stats_sorted:
+        lbl = f"📍 {r['krotka']} — {r['pending']} oczekujących"
+        if r['recent'] > 0:
+            lbl += f" (nowych: {r['recent']})"
+        region_labels[r['kod']] = lbl
+
+    selected_region_code = st.sidebar.radio(
+        "Wybierz rejon do podglądu:",
+        options=all_region_keys,
+        format_func=lambda x: region_labels.get(x, x)
     )
 
     st.title("🖥️ Pulpit Koordynatora")
@@ -295,7 +334,56 @@ if st.session_state.user_role == "koordynator":
 
     # --- ZAKŁADKA 1: BAZA KLIENTÓW ---
     with tab_k1:
-        st.subheader("1. Wyszukaj klienta")
+        if selected_region_code != "ALL":
+            region_mask = (
+                df['Rejon Polski'].str.contains(f"Rejon {selected_region_code}", case=False, na=False) |
+                df['Kod pocztowy'].str.startswith(selected_region_code)
+            )
+            region_df = df[region_mask]
+            
+            r_info = next((item for item in region_stats if item["kod"] == selected_region_code), None)
+            r_title = r_info['pelna'] if r_info else f"Rejon {selected_region_code}"
+            
+            st.markdown(f"### 📍 Widok: {r_title}")
+            
+            # TABELA OCZEKUJĄCYCH ZGŁOSZEŃ W TYM REJONIE
+            pending_in_curr_region = region_df[~region_df['STATUS ZGŁOSZENIA'].str.lower().str.contains('zakończ|anulow', na=False)]
+            
+            with st.expander(f"📋 Lista oczekujących zgłoszeń w tym rejonie ({len(pending_in_curr_region)} spraw) ⬇", expanded=True):
+                if pending_in_curr_region.empty:
+                    st.success("🎉 Brak oczekujących zgłoszeń w tym rejonie — wszystkie sprawy zakończone!")
+                else:
+                    t_rows = []
+                    for _, p_row in pending_in_curr_region.iterrows():
+                        t_rows.append({
+                            "Nr": p_row.get('nr.', ''),
+                            "Data zgłoszenia": str(p_row.get('DATA ZGŁOSZENIA', ''))[:16],
+                            "Klient": f"{p_row.get('Imię', '')} {p_row.get('Nazwisko', '')}",
+                            "Telefon": p_row.get('Numer telefonu', ''),
+                            "Miejscowość": p_row.get('Miejscowość', ''),
+                            "Adres": p_row.get('Adres', ''),
+                            "Instalacja": str(p_row.get('INSTALACJA', '')).upper(),
+                            "Status": p_row.get('STATUS ZGŁOSZENIA', 'w toku'),
+                            "Opis usterki": p_row.get('OPIS OD KLIENTA', '') or p_row.get('OPIS', ''),
+                            "ID": p_row['Klient_ID']
+                        })
+                    t_df = pd.DataFrame(t_rows)
+                    st.dataframe(t_df.drop(columns=['ID']), use_container_width=True, hide_index=True)
+                    
+                    ticket_select_options = [f"#{row['Nr']} | {row['Klient']} ({row['Miejscowość']})" for _, row in t_df.iterrows()]
+                    quick_pick = st.selectbox("Szybki wybór klienta z powyższej kolejki do otwarcia karty:", ["-- Wybierz z listy --"] + ticket_select_options)
+                    if quick_pick != "-- Wybierz z listy --":
+                        picked_idx = ticket_select_options.index(quick_pick)
+                        st.session_state.selected_client_id = t_df.iloc[picked_idx]['ID']
+                        st.rerun()
+            
+            filtered_df = region_df.copy()
+        else:
+            st.markdown("### 🌐 Widok ogólnopolski (Wszystkie rejony)")
+            filtered_df = df.copy()
+
+        st.markdown("---")
+        st.subheader("1. Wyszukaj klienta w bazie")
         col_s1, col_s2 = st.columns([3, 1])
         with col_s1:
             search_query = st.text_input(
@@ -308,10 +396,6 @@ if st.session_state.user_role == "koordynator":
                 st.session_state.selected_client_id = None
                 st.rerun()
 
-        filtered_df = df.copy()
-        if selected_region_raw != "Wszystkie rejony":
-            filtered_df = filtered_df[filtered_df['Rejon Polski'] == selected_region_raw]
-
         if search_query:
             query_mask = (
                 filtered_df['Imię'].str.lower().str.contains(search_query, na=False) |
@@ -323,10 +407,10 @@ if st.session_state.user_role == "koordynator":
             filtered_df = filtered_df[query_mask]
 
         clients_unique = filtered_df.drop_duplicates(subset=['Klient_ID'])
-        st.write(f"Znaleziono klientów: **{len(clients_unique)}** (wszystkich zgłoszeń w filtrze: **{len(filtered_df)}**)")
+        st.write(f"Znaleziono pasujących klientów: **{len(clients_unique)}** (łącznie pasujących zgłoszeń: **{len(filtered_df)}**)")
 
         if len(clients_unique) > 0:
-            st.markdown("##### Wyniki wyszukiwania — wybierz klienta:")
+            st.markdown("##### Wybierz klienta, aby otworzyć jego kartę:")
             client_choices = []
             id_to_label = {}
             for idx, r in clients_unique.head(50).iterrows():
@@ -384,7 +468,7 @@ if st.session_state.user_role == "koordynator":
                 if st.button("➕ DODAJ NOWE ZGŁOSZENIE DLA TEGO KLIENTA", type="primary"):
                     st.session_state.show_new_ticket_modal = True
 
-                # PEŁNA LISTA ZGŁOSZEŃ I STATUSÓW
+                # PEŁNA LISTA ZGŁOSZEŃ I STATUSÓW KLIENTA
                 st.markdown("### 📋 Historia i status zgłoszeń tego klienta:")
                 
                 summary_data = []
@@ -617,7 +701,7 @@ elif st.session_state.user_role == "serwisant":
     )
     tech_df = tech_df[ready_for_service_mask]
 
-    is_done = tech_df['STATUS ZGŁOSZENIA'].str.lower().str.contains('zakończ', na=False)
+    is_done = tech_df['STATUS ZGŁOSZENIA'].str.lower().str.contains('zakończ|anulow', na=False)
     otwarte_df = tech_df[~is_done]
     zakonczone_df = tech_df[is_done]
 
