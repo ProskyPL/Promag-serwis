@@ -11,7 +11,11 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Style responsywne pod komputery i telefony
+# Katalog na załączniki (zdjęcia i filmiki)
+ATTACHMENTS_DIR = "zalaczniki"
+os.makedirs(ATTACHMENTS_DIR, exist_ok=True)
+
+# Style responsywne pod komputery i smartfony
 st.markdown("""
 <style>
     .mobile-card {
@@ -38,7 +42,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Kody PIN i przypisane rejony
+# Konfiguracja kodów PIN rejonów i serwisantów
 PIN_CONFIG = {
     "1110": {"rejon_kod": "0", "nazwa_rejonu": "Rejon 0 (Warszawa / Mazowieckie)", "domyslny_serwisant": "Leszek"},
     "1111": {"rejon_kod": "2", "nazwa_rejonu": "Rejon 2 (Lubelskie / Świętokrzyskie)", "domyslny_serwisant": "Stanisław"},
@@ -52,6 +56,32 @@ PIN_CONFIG = {
     "1119": {"rejon_kod": "7", "nazwa_rejonu": "Rejon 7 (Zachodniopomorskie)", "domyslny_serwisant": "Piasta"},
     "9999": {"rejon_kod": "ALL", "nazwa_rejonu": "Dostęp ogólny / Wszystkie", "domyslny_serwisant": "Koordynator"}
 }
+
+def get_clean_client_id(row):
+    tel = str(row.get('Numer telefonu', '')).strip()
+    tel_digits = "".join([c for c in tel if c.isdigit()])
+    imie = str(row.get('Imię', '')).strip().lower()
+    nazwisko = str(row.get('Nazwisko', '')).strip().lower()
+    if tel_digits:
+        return f"tel_{tel_digits}"
+    return f"osoba_{imie}_{nazwisko}"
+
+def wyswietl_multimedia(ticket_nr):
+    ticket_folder = os.path.join(ATTACHMENTS_DIR, str(ticket_nr))
+    if os.path.exists(ticket_folder):
+        files = os.listdir(ticket_folder)
+        if files:
+            st.markdown("📷 **Załączone materiały (zdjęcia / filmiki):**")
+            cols = st.columns(3)
+            for idx, filename in enumerate(files):
+                file_path = os.path.join(ticket_folder, filename)
+                ext = filename.split('.')[-1].lower()
+                with cols[idx % 3]:
+                    if ext in ['jpg', 'jpeg', 'png', 'webp']:
+                        st.image(file_path, caption=filename, use_container_width=True)
+                    elif ext in ['mp4', 'mov', 'avi']:
+                        st.video(file_path)
+                        st.caption(f"🎥 {filename}")
 
 @st.cache_data
 def load_data():
@@ -71,6 +101,9 @@ def load_data():
         if c in df.columns:
             df[c] = df[c].fillna('').astype(str)
 
+    if 'DATA ZGŁOSZENIA' in df.columns:
+        df['DATA ZGŁOSZENIA'] = df['DATA ZGŁOSZENIA'].fillna('').astype(str)
+
     if 'Zużyte materiały' not in df.columns:
         df['Zużyte materiały'] = ''
     if 'Czynności dodatkowe' not in df.columns:
@@ -81,11 +114,16 @@ def load_data():
         df['Kwota przyjęta'] = df['Kwota']
     if 'Komentarz serwisanta' not in df.columns:
         df['Komentarz serwisanta'] = ''
+    if 'Wymaga oferty' not in df.columns:
+        df['Wymaga oferty'] = False
+    if 'Email handlowca' not in df.columns:
+        df['Email handlowca'] = ''
+    if 'Etap oferty' not in df.columns:
+        df['Etap oferty'] = ''
+    if 'Data oferty' not in df.columns:
+        df['Data oferty'] = ''
 
-    df['Klient_ID'] = df.apply(
-        lambda r: f"{r.get('Numer telefonu', '')}_{r.get('Imię', '')}_{r.get('Nazwisko', '')}".strip('_'), 
-        axis=1
-    )
+    df['Klient_ID'] = df.apply(get_clean_client_id, axis=1)
     return df
 
 if 'df' not in st.session_state:
@@ -96,9 +134,6 @@ if 'user_role' not in st.session_state:
 
 if 'tech_pin' not in st.session_state:
     st.session_state.tech_pin = None
-
-if 'nowe_zgloszenia' not in st.session_state:
-    st.session_state.nowe_zgloszenia = []
 
 if 'next_ticket_id' not in st.session_state:
     st.session_state.next_ticket_id = 1
@@ -121,14 +156,14 @@ if not st.session_state.user_role:
     col_r1, col_r2 = st.columns(2)
     with col_r1:
         st.info("### 🖥️ Panel Koordynatora")
-        st.write("Wyszukiwarka klientów, pełna historia zleceń, podział na regiony, rejestracja nowych zgłoszeń.")
+        st.write("Wyszukiwarka klientów, pełna historia zgłoszeń ze statusami, załączanie zdjęć/wideo, lejek ofertowy handlowców.")
         if st.button("Wejdź jako Koordynator", use_container_width=True, type="primary"):
             st.session_state.user_role = "koordynator"
             st.rerun()
 
     with col_r2:
         st.success("### 📱 Panel Serwisanta")
-        st.write("Widok mobilny pod telefon: zadania w terenie, nawigacja Google Maps, szybki telefon, rozliczenie (dostęp na PIN).")
+        st.write("Widok mobilny pod telefon: zatwierdzone zlecenia w Twoim rejonie, nawigacja Google Maps, zdjęcia/filmy usterki, rozliczenie (dostęp na PIN).")
         if st.button("Wejdź jako Serwisant (PIN)", use_container_width=True):
             st.session_state.user_role = "serwisant"
             st.rerun()
@@ -147,17 +182,24 @@ if st.session_state.user_role == "koordynator":
         st.rerun()
 
     st.sidebar.markdown("---")
-    st.sidebar.subheader("📍 Regiony Pocztowe")
-    st.sidebar.caption("Sortowanie malejąco wg oczekujących")
+    st.sidebar.subheader("📍 Rejony Pocztowe")
+    st.sidebar.caption("Liczba nowych zgłoszeń: **od wczoraj do dziś**")
 
-    pending_mask = ~df['STATUS ZGŁOSZENIA'].str.lower().str.contains('zakończ', na=False)
-    pending_df = df[pending_mask]
-    counts_per_region = pending_df['Rejon Polski'].value_counts()
+    # Obliczenie daty wczorajszej (odcięcie archiwum)
+    yesterday_str = (datetime.date.today() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
 
-    all_regions = ["Wszystkie rejony"] + list(counts_per_region.index)
-    region_options = {"Wszystkie rejony": f"🌐 Wszystkie ({len(pending_df)} oczekujących)"}
-    for r in counts_per_region.index:
-        region_options[r] = f"{r} ({counts_per_region[r]})"
+    # Zliczamy wyłącznie świeże zgłoszenia (od wczoraj do dziś)
+    recent_mask = df['DATA ZGŁOSZENIA'].str[:10] >= yesterday_str
+    recent_df = df[recent_mask]
+    counts_recent = recent_df['Rejon Polski'].value_counts()
+
+    wszystkie_znane_rejony = [f"Rejon {i}" for i in [0, 2, 6, 8, 9, 3, 1, 4, 5, 7]]
+    all_regions = ["Wszystkie rejony"] + wszystkie_znane_rejony
+
+    region_options = {"Wszystkie rejony": f"🌐 Wszystkie ({len(recent_df)} od wczoraj)"}
+    for r in wszystkie_znane_rejony:
+        c = counts_recent.get(r, 0)
+        region_options[r] = f"{r} ({c})"
 
     selected_region_raw = st.sidebar.radio(
         "Filtruj wg rejonu:",
@@ -166,147 +208,321 @@ if st.session_state.user_role == "koordynator":
     )
 
     st.title("🖥️ Pulpit Koordynatora")
-    st.subheader("1. Wyszukaj klienta w bazie")
-    col_s1, col_s2 = st.columns([3, 1])
-    with col_s1:
-        search_query = st.text_input(
-            "Wpisz nazwisko, imię, numer telefonu, miejscowość lub adres:",
-            placeholder="np. Kowalski, 602 123 456, Radom, Topolowa...",
-        ).strip().lower()
 
-    with col_s2:
-        if st.button("🔄 Resetuj filtry", use_container_width=True):
-            st.session_state.selected_client_id = None
-            st.rerun()
+    tab_k1, tab_k2 = st.tabs(["🔍 Baza Klientów & Zgłoszenia", "📑 Lejek Ofert Handlowych"])
 
-    filtered_df = df.copy()
-    if selected_region_raw != "Wszystkie rejony":
-        filtered_df = filtered_df[filtered_df['Rejon Polski'] == selected_region_raw]
+    # --- ZAKŁADKA 2: LEJEK OFERTOWY ---
+    with tab_k2:
+        st.subheader("📑 Zgłoszenia wymagające oferty handlowej")
+        st.caption("Sprawy w tym lejku NIE są widoczne u serwisanta, dopóki klient nie zaakceptuje oferty.")
 
-    if search_query:
-        query_mask = (
-            filtered_df['Imię'].str.lower().str.contains(search_query, na=False) |
-            filtered_df['Nazwisko'].str.lower().str.contains(search_query, na=False) |
-            filtered_df['Numer telefonu'].str.lower().str.contains(search_query, na=False) |
-            filtered_df['Miejscowość'].str.lower().str.contains(search_query, na=False) |
-            filtered_df['Adres'].str.lower().str.contains(search_query, na=False)
-        )
-        filtered_df = filtered_df[query_mask]
+        oferty_df = df[df['Wymaga oferty'] == True]
 
-    clients_unique = filtered_df.drop_duplicates(subset=['Klient_ID'])
-    st.write(f"Znaleziono klientów: **{len(clients_unique)}** (łącznie zgłoszeń: **{len(filtered_df)}**)")
+        if oferty_df.empty:
+            st.info("Brak zgłoszeń w trakcie ofertowania.")
+        else:
+            for idx, o_row in oferty_df.iterrows():
+                o_nr = o_row['nr.']
+                o_etap = o_row.get('Etap oferty', 'Czeka na ofertę handlowca')
+                o_email = o_row.get('Email handlowca', 'Nie podano')
+                o_klient = f"{o_row.get('Imię', '')} {o_row.get('Nazwisko', '')}"
+                o_tel = o_row.get('Numer telefonu', '')
+                o_miasto = f"{o_row.get('Kod pocztowy', '')} {o_row.get('Miejscowość', '')}"
 
-    if len(clients_unique) > 0:
-        st.markdown("##### Wyniki — wybierz klienta z listy poniżej:")
-        client_choices = []
-        for idx, r in clients_unique.head(50).iterrows():
-            name = f"{r.get('Imię', '')} {r.get('Nazwisko', '')}".strip() or "Brak nazwiska"
-            tel = r.get('Numer telefonu', '')
-            miasto = r.get('Miejscowość', '')
-            ulica = r.get('Adres', '')
-            client_choices.append({
-                'ID': r['Klient_ID'],
-                'Etykieta': f"{name} | 📞 {tel} | 📍 {miasto}, {ulica} ({r.get('Rejon Polski', '')})"
-            })
+                with st.expander(f"Zgłoszenie #{o_nr} | Klient: {o_klient} ({o_miasto}) | Status: {o_etap}", expanded=True):
+                    c_o1, c_o2 = st.columns(2)
+                    with c_o1:
+                        st.markdown(f"**Klient:** {o_klient} (📞 {o_tel})")
+                        st.markdown(f"**Lokalizacja:** {o_miasto}, {o_row.get('Adres', '')}")
+                        st.markdown(f"**Usterka / Zapytanie:** {o_row.get('OPIS OD KLIENTA', '')}")
+                    with c_o2:
+                        st.markdown(f"**Handlowiec:** `{o_email}`")
+                        st.markdown(f"**Data wpisu:** {o_row.get('Data oferty', '')}")
+                        st.markdown(f"**Aktualny etap:** **{o_etap}**")
 
-        choice_labels = [c['Etykieta'] for c in client_choices]
-        selected_idx = 0
-        if st.session_state.selected_client_id:
-            for i, c in enumerate(client_choices):
-                if c['ID'] == st.session_state.selected_client_id:
-                    selected_idx = i
+                    wyswietl_multimedia(o_nr)
+
+                    st.write("")
+                    col_b1, col_b2 = st.columns(2)
+
+                    if o_etap == "Czeka na ofertę handlowca":
+                        with col_b1:
+                            if st.button("✅ Oferta wysłana do klienta", key=f"btn_off_sent_{o_nr}", type="primary"):
+                                df.at[idx, 'Etap oferty'] = 'Oczekiwanie na akceptację klienta'
+                                df.at[idx, 'STATUS ZGŁOSZENIA'] = 'Oczekiwanie na akceptację'
+                                st.session_state.df = df
+                                st.success("Zmieniono etap na: Oczekiwanie na akceptację klienta")
+                                st.rerun()
+
+                    elif o_etap == "Oczekiwanie na akceptację klienta":
+                        with col_b1:
+                            if st.button("🚀 Klient zaakceptował → Przekaż do serwisu", key=f"btn_off_accept_{o_nr}", type="primary"):
+                                df.at[idx, 'Etap oferty'] = 'Zaakceptowano (w serwisie)'
+                                df.at[idx, 'STATUS ZGŁOSZENIA'] = 'w toku'
+                                st.session_state.df = df
+                                st.success("✅ Oferta zaakceptowana! Zlecenie przekazane do serwisu.")
+                                st.rerun()
+                        with col_b2:
+                            if st.button("❌ Klient odrzucił ofertę", key=f"btn_off_rej_{o_nr}"):
+                                df.at[idx, 'Etap oferty'] = 'Odrzucona przez klienta'
+                                df.at[idx, 'STATUS ZGŁOSZENIA'] = 'anulowane'
+                                st.session_state.df = df
+                                st.warning("Zgłoszenie anulowane.")
+                                st.rerun()
+
+    # --- ZAKŁADKA 1: BAZA KLIENTÓW ---
+    with tab_k1:
+        st.subheader("1. Wyszukaj klienta")
+        col_s1, col_s2 = st.columns([3, 1])
+        with col_s1:
+            search_query = st.text_input(
+                "Wpisz nazwisko, imię, numer telefonu, miejscowość lub adres:",
+                placeholder="np. Kowalski, 602 123 456, Radom, Topolowa...",
+            ).strip().lower()
+
+        with col_s2:
+            if st.button("🔄 Resetuj wybór", use_container_width=True):
+                st.session_state.selected_client_id = None
+                st.rerun()
+
+        filtered_df = df.copy()
+        if selected_region_raw != "Wszystkie rejony":
+            filtered_df = filtered_df[filtered_df['Rejon Polski'] == selected_region_raw]
+
+        if search_query:
+            query_mask = (
+                filtered_df['Imię'].str.lower().str.contains(search_query, na=False) |
+                filtered_df['Nazwisko'].str.lower().str.contains(search_query, na=False) |
+                filtered_df['Numer telefonu'].str.lower().str.contains(search_query, na=False) |
+                filtered_df['Miejscowość'].str.lower().str.contains(search_query, na=False) |
+                filtered_df['Adres'].str.lower().str.contains(search_query, na=False)
+            )
+            filtered_df = filtered_df[query_mask]
+
+        clients_unique = filtered_df.drop_duplicates(subset=['Klient_ID'])
+        st.write(f"Znaleziono klientów: **{len(clients_unique)}** (wszystkich pasujących zgłoszeń: **{len(filtered_df)}**)")
+
+        if len(clients_unique) > 0:
+            st.markdown("##### Wyniki wyszukiwania — wybierz klienta:")
+            client_choices = []
+            id_to_label = {}
+            for idx, r in clients_unique.head(50).iterrows():
+                name = f"{r.get('Imię', '')} {r.get('Nazwisko', '')}".strip() or "Brak nazwiska"
+                tel = r.get('Numer telefonu', '')
+                miasto = r.get('Miejscowość', '')
+                ulica = r.get('Adres', '')
+                cid = r['Klient_ID']
+                lbl = f"{name} | 📞 {tel} | 📍 {miasto}, {ulica}"
+                client_choices.append({'ID': cid, 'Etykieta': lbl})
+                id_to_label[cid] = lbl
+
+            current_choice_idx = 0
+            if st.session_state.selected_client_id:
+                for i, c in enumerate(client_choices):
+                    if c['ID'] == st.session_state.selected_client_id:
+                        current_choice_idx = i
+                        break
+
+            choice_labels = [c['Etykieta'] for c in client_choices]
+            selected_label = st.selectbox(
+                "Wybierz klienta z listy:",
+                options=choice_labels,
+                index=current_choice_idx,
+                key="select_client_box"
+            )
+            
+            for c in client_choices:
+                if c['Etykieta'] == selected_label:
+                    st.session_state.selected_client_id = c['ID']
                     break
 
-        selected_label = st.selectbox("Lista klientów:", options=choice_labels, index=selected_idx)
-        for c in client_choices:
-            if c['Etykieta'] == selected_label:
-                st.session_state.selected_client_id = c['ID']
-                break
+        # --- KARTA WYBRANEGO KLIENTA ---
+        if st.session_state.selected_client_id:
+            client_records = st.session_state.df[st.session_state.df['Klient_ID'] == st.session_state.selected_client_id]
+            
+            if not client_records.empty:
+                first_record = client_records.iloc[0]
 
-    if st.session_state.selected_client_id:
-        client_records = df[df['Klient_ID'] == st.session_state.selected_client_id]
-        first_record = client_records.iloc[0]
-
-        st.divider()
-        st.subheader(f"👤 Karta Klienta: {first_record.get('Imię', '')} {first_record.get('Nazwisko', '')}")
-        col_k1, col_k2, col_k3 = st.columns(3)
-        with col_k1:
-            st.markdown(f"**📞 Telefon:** {first_record.get('Numer telefonu', 'Brak')}")
-            st.markdown(f"**✉️ E-mail:** {first_record.get('E-mail', 'Brak')}")
-        with col_k2:
-            st.markdown(f"**📍 Adres:** {first_record.get('Adres', '')}")
-            st.markdown(f"**📮 Kod i miasto:** {first_record.get('Kod pocztowy', '')} {first_record.get('Miejscowość', '')}")
-        with col_k3:
-            st.markdown(f"**🌐 Rejon:** {first_record.get('Rejon Polski', '')}")
-            st.markdown(f"**Historia wizyt:** {len(client_records)}")
-
-        st.write("")
-        if st.button("➕ DODAJ NOWE ZGŁOSZENIE DLA TEGO KLIENTA", type="primary"):
-            st.session_state.show_new_ticket_modal = True
-
-        if st.session_state.show_new_ticket_modal:
-            st.info("📝 Rejestracja nowego zgłoszenia:")
-            with st.form("form_nowe_zgloszenie"):
-                f_col1, f_col2 = st.columns(2)
-                with f_col1:
-                    st.text_input("Numer zgłoszenia (auto):", value=f"#{st.session_state.next_ticket_id}", disabled=True)
-                    forma = st.radio("Forma zgłoszenia:", ["telefon", "SMS", "WhatsApp", "e-mail"], horizontal=True)
-                    priorytet = st.selectbox("Priorytet:", ["Standardowy", "Pilny", "Awaria", "Niski"], index=0)
-                with f_col2:
-                    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-                    st.text_input("Data i godzina:", value=now_str, disabled=True)
-                    usterka_dotyczy = st.selectbox("Usterka dotyczy:", ["solar", "foto", "pompa", "magazyn"], index=0)
-                    producent = st.text_input("Producent instalacji:", placeholder="np. Hewalex, Deye, Fronius, Sofar...")
-
-                opis_zgloszenia = st.text_area("Opis usterki zgłaszanej przez klienta:")
+                st.divider()
+                st.subheader(f"👤 Karta Klienta: {first_record.get('Imię', '')} {first_record.get('Nazwisko', '')}")
                 
-                c_save, c_cancel = st.columns([1, 4])
-                with c_save:
-                    submitted = st.form_submit_button("💾 Zapisz zgłoszenie", type="primary")
-                with c_cancel:
-                    cancel = st.form_submit_button("Anuluj")
+                col_k1, col_k2, col_k3 = st.columns(3)
+                with col_k1:
+                    st.markdown(f"**📞 Telefon:** {first_record.get('Numer telefonu', 'Brak')}")
+                    st.markdown(f"**✉️ E-mail:** {first_record.get('E-mail', 'Brak')}")
+                with col_k2:
+                    st.markdown(f"**📍 Adres:** {first_record.get('Adres', '')}")
+                    st.markdown(f"**📮 Kod i miasto:** {first_record.get('Kod pocztowy', '')} {first_record.get('Miejscowość', '')}")
+                with col_k3:
+                    st.markdown(f"**🌐 Rejon:** {first_record.get('Rejon Polski', '')}")
+                    st.markdown(f"**Liczba zgłoszeń w bazie:** **{len(client_records)}**")
 
-                if submitted:
-                    new_entry = {
-                        "Numer": f"#{st.session_state.next_ticket_id}",
-                        "Data i godzina": now_str,
-                        "Klient": f"{first_record.get('Imię', '')} {first_record.get('Nazwisko', '')}",
-                        "Telefon": first_record.get('Numer telefonu', ''),
-                        "Miejscowość": first_record.get('Miejscowość', ''),
-                        "Rejon": first_record.get('Rejon Polski', ''),
-                        "Forma": forma,
-                        "Priorytet": priorytet,
-                        "Dotyczy": usterka_dotyczy,
-                        "Producent": producent,
-                        "Opis": opis_zgloszenia,
-                        "Status": "Nowe (oczekujące)"
-                    }
-                    st.session_state.nowe_zgloszenia.append(new_entry)
-                    st.session_state.next_ticket_id += 1
-                    st.session_state.show_new_ticket_modal = False
-                    st.success("✅ Pomyślnie zarejestrowano zgłoszenie!")
-                    st.rerun()
+                st.write("")
+                if st.button("➕ DODAJ NOWE ZGŁOSZENIE DLA TEGO KLIENTA", type="primary"):
+                    st.session_state.show_new_ticket_modal = True
 
-                if cancel:
-                    st.session_state.show_new_ticket_modal = False
-                    st.rerun()
+                # PEŁNA LISTA ZGŁOSZEŃ I STATUSÓW
+                st.markdown("### 📋 Historia i status zgłoszeń tego klienta:")
+                
+                summary_data = []
+                for _, r_t in client_records.iterrows():
+                    stat = str(r_t.get('STATUS ZGŁOSZENIA', '')).strip()
+                    etap = str(r_t.get('Etap oferty', '')).strip()
+                    
+                    display_status = stat
+                    if etap:
+                        display_status = f"{stat} ({etap})" if stat != etap else etap
+                    
+                    serw_osoba = r_t.get('SERWISANT', '')
+                    if not serw_osoba and r_t.get('Email handlowca', ''):
+                        serw_osoba = f"Handlowiec: {r_t.get('Email handlowca')}"
+                    elif not serw_osoba:
+                        serw_osoba = "Nieprzypisany"
 
-        st.markdown("#### 📂 Informacje Archiwalne:")
-        for i, (_, row) in enumerate(client_records.iterrows(), 1):
-            with st.expander(f"Zgłoszenie nr: {row.get('nr.', 'Brak nr')} | Typ: {row.get('INSTALACJA', '')} | Data: {str(row.get('DATA ZGŁOSZENIA', ''))[:10]} | Status: {row.get('STATUS ZGŁOSZENIA', '')}", expanded=(i==1)):
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.markdown(f"**Data zgłoszenia:** {row.get('DATA ZGŁOSZENIA', '')}")
-                    st.markdown(f"**Serwisant:** {row.get('SERWISANT', 'Nieprzypisany')}")
-                    st.markdown(f"**Kwota:** {row.get('Kwota', '')} zł")
-                with c2:
-                    st.markdown(f"**Data serwisu:** {row.get('DATA SERWISU', 'Brak')}")
-                    st.markdown(f"**Płatność:** {row.get('Płatność ', '')}")
-                    st.markdown(f"**Status:** {row.get('STATUS ZGŁOSZENIA', '')}")
+                    summary_data.append({
+                        "Nr zgłoszenia": r_t.get('nr.', ''),
+                        "Data zgłoszenia": str(r_t.get('DATA ZGŁOSZENIA', ''))[:16],
+                        "Typ instalacji": str(r_t.get('INSTALACJA', '')).upper(),
+                        "Status zgłoszenia": display_status or "w toku",
+                        "Przypisany": serw_osoba,
+                        "Opis usterki / zlecenia": r_t.get('OPIS OD KLIENTA', '') or r_t.get('OPIS', ''),
+                        "Kwota": f"{r_t.get('Kwota', '')} zł" if str(r_t.get('Kwota', '')).strip() else "—"
+                    })
 
-                st.markdown(f"**Opis od klienta:** {row.get('OPIS OD KLIENTA', 'Brak')}")
-                st.markdown(f"**Opis techniczny:** {row.get('OPIS', 'Brak')}")
-                st.markdown(f"**Informacje dodatkowe:** {row.get('INFORMACJE DODATKOWE', 'Brak')}")
+                summary_df = pd.DataFrame(summary_data)
+                st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+                # FORMULARZ NOWEGO ZGŁOSZENIA Z MODYFIKACJĄ DATY I MULTIMEDIAMI
+                if st.session_state.show_new_ticket_modal:
+                    st.info("📝 Rejestracja nowego zgłoszenia:")
+                    
+                    new_ticket_nr_preview = f"N{st.session_state.next_ticket_id}"
+
+                    # 1. Zmiana daty
+                    custom_date_enabled = st.checkbox("📅 Zmień datę i czas zgłoszenia (domyślnie: teraz)")
+                    now_default = datetime.datetime.now()
+                    if custom_date_enabled:
+                        col_d1, col_d2 = st.columns(2)
+                        with col_d1:
+                            wybrana_data = st.date_input("Wybierz datę zgłoszenia:", value=now_default.date())
+                        with col_d2:
+                            wybrana_godzina = st.time_input("Wybierz godzinę:", value=now_default.time())
+                        now_str = f"{wybrana_data} {wybrana_godzina.strftime('%H:%M')}"
+                    else:
+                        now_str = now_default.strftime("%Y-%m-%d %H:%M")
+
+                    # 2. Załączanie zdjęć i filmików przed zatwierdzeniem
+                    st.markdown("📷 **Załącz zdjęcia lub filmiki (zanim cokolwiek stanie się ze zgłoszeniem):**")
+                    uploaded_media = st.file_uploader(
+                        "Przeciągnij zdjęcia lub filmiki (JPG, PNG, MP4, MOV...):",
+                        type=['png', 'jpg', 'jpeg', 'webp', 'mp4', 'mov', 'avi'],
+                        accept_multiple_files=True,
+                        key="uploader_new_ticket"
+                    )
+
+                    with st.form("form_nowe_zgloszenie"):
+                        f_col1, f_col2 = st.columns(2)
+                        with f_col1:
+                            st.text_input("Numer zgłoszenia (auto):", value=f"#{new_ticket_nr_preview}", disabled=True)
+                            forma = st.radio("Forma zgłoszenia:", ["telefon", "SMS", "WhatsApp", "e-mail"], horizontal=True)
+                            priorytet = st.selectbox("Priorytet:", ["Standardowy", "Pilny", "Awaria", "Niski"], index=0)
+                            
+                        with f_col2:
+                            st.text_input("Data i godzina rejestracji:", value=now_str, disabled=True)
+                            usterka_dotyczy = st.selectbox("Usterka dotyczy:", ["solar", "foto", "pompa", "magazyn"], index=0)
+                            producent = st.text_input("Producent instalacji:", placeholder="np. Hewalex, Deye, Fronius, Sofar...")
+
+                        opis_zgloszenia = st.text_area("Opis usterki / zapytania od klienta:", placeholder="Wpisz treść problemu...")
+
+                        st.markdown("---")
+                        wymaga_oferty = st.checkbox("💼 Zgłoszenie wymaga oferty handlowej (przekaż do handlowca)")
+                        email_handlowca = ""
+                        if wymaga_oferty:
+                            email_handlowca = st.text_input("Wpisz adres e-mail handlowca:", placeholder="np. handlowiec@twojafirma.pl")
+
+                        c_save, c_cancel = st.columns([1, 4])
+                        with c_save:
+                            submitted = st.form_submit_button("💾 ZAPISZ ZGŁOSZENIE", type="primary")
+                        with c_cancel:
+                            cancel = st.form_submit_button("Anuluj")
+
+                        if submitted:
+                            new_ticket_nr = f"N{st.session_state.next_ticket_id}"
+                            etap_startowy = "Czeka na ofertę handlowca" if wymaga_oferty else ""
+                            status_startowy = "Czeka na ofertę handlowca" if wymaga_oferty else "w toku"
+
+                            # Zapis przesłanych plików multimedialnych do folderu lokalnego
+                            if uploaded_media:
+                                target_dir = os.path.join(ATTACHMENTS_DIR, str(new_ticket_nr))
+                                os.makedirs(target_dir, exist_ok=True)
+                                for file in uploaded_media:
+                                    f_dest = os.path.join(target_dir, file.name)
+                                    with open(f_dest, "wb") as f_out:
+                                        f_out.write(file.getbuffer())
+
+                            new_row_dict = {
+                                "nr.": new_ticket_nr,
+                                "INSTALACJA": usterka_dotyczy,
+                                "DATA ZGŁOSZENIA": now_str,
+                                "PRZYJMUJĄCY": "Koordynator",
+                                "Imię": first_record.get('Imię', ''),
+                                "Nazwisko": first_record.get('Nazwisko', ''),
+                                "Numer telefonu": first_record.get('Numer telefonu', ''),
+                                "E-mail": first_record.get('E-mail', ''),
+                                "Kod pocztowy": first_record.get('Kod pocztowy', ''),
+                                "Miejscowość": first_record.get('Miejscowość', ''),
+                                "Adres": first_record.get('Adres', ''),
+                                "Rejon Polski": first_record.get('Rejon Polski', ''),
+                                "STATUS ZGŁOSZENIA": status_startowy,
+                                "SERWISANT": "",
+                                "OPIS OD KLIENTA": opis_zgloszenia,
+                                "OPIS": "",
+                                "INFORMACJE DODATKOWE": f"Forma: {forma} | Priorytet: {priorytet} | Producent: {producent}",
+                                "Kwota": "",
+                                "Płatność ": "",
+                                "Zużyte materiały": "",
+                                "Czynności dodatkowe": "",
+                                "Ilość przyjazdów": "1",
+                                "Kwota przyjęta": "",
+                                "Komentarz serwisanta": "",
+                                "Wymaga oferty": wymaga_oferty,
+                                "Email handlowca": email_handlowca,
+                                "Etap oferty": etap_startowy,
+                                "Data oferty": now_str[:10],
+                                "Klient_ID": first_record['Klient_ID']
+                            }
+
+                            st.session_state.df = pd.concat([pd.DataFrame([new_row_dict]), st.session_state.df], ignore_index=True)
+                            st.session_state.next_ticket_id += 1
+                            st.session_state.show_new_ticket_modal = False
+                            st.success(f"✅ Zapisano zgłoszenie #{new_ticket_nr}!")
+                            st.rerun()
+
+                        if cancel:
+                            st.session_state.show_new_ticket_modal = False
+                            st.rerun()
+
+                # SZCZEGÓŁOWE ARCHIWUM Z PODGLĄDEM ZDJĘĆ/WIDEO
+                st.markdown("#### 🔍 Szczegóły poszczególnych zleceń:")
+                for i, (_, row) in enumerate(client_records.iterrows(), 1):
+                    nr_t = str(row.get('nr.', 'Brak nr'))
+                    with st.expander(f"Zgłoszenie nr: {nr_t} | Typ: {row.get('INSTALACJA', '')} | Data: {str(row.get('DATA ZGŁOSZENIA', ''))[:10]} | Status: {row.get('STATUS ZGŁOSZENIA', '')}", expanded=(i==1)):
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            st.markdown(f"**Data zgłoszenia:** {row.get('DATA ZGŁOSZENIA', '')}")
+                            st.markdown(f"**Serwisant:** {row.get('SERWISANT', 'Nieprzypisany')}")
+                            st.markdown(f"**Kwota:** {row.get('Kwota', '')} zł")
+                        with c2:
+                            st.markdown(f"**Data serwisu:** {row.get('DATA SERWISU', 'Brak')}")
+                            st.markdown(f"**Płatność:** {row.get('Płatność ', '')}")
+                            st.markdown(f"**Status:** {row.get('STATUS ZGŁOSZENIA', '')}")
+
+                        st.markdown(f"**Opis od klienta:** {row.get('OPIS OD KLIENTA', 'Brak')}")
+                        st.markdown(f"**Opis techniczny:** {row.get('OPIS', 'Brak')}")
+                        st.markdown(f"**Informacje dodatkowe:** {row.get('INFORMACJE DODATKOWE', 'Brak')}")
+
+                        # Wyświetlenie załączonych zdjęć i filmików
+                        wyswietl_multimedia(nr_t)
 
 # =========================================================================
 # 2. MODUŁ SERWISANTA (MOBILNY Z PIN-EM)
@@ -368,6 +584,12 @@ elif st.session_state.user_role == "serwisant":
             df['Kod pocztowy'].str.startswith(f"{rejon_kod}")
         )
         tech_df = df[mask_rejon]
+
+    ready_for_service_mask = (
+        (tech_df['Etap oferty'] != 'Czeka na ofertę handlowca') &
+        (tech_df['Etap oferty'] != 'Oczekiwanie na akceptację klienta')
+    )
+    tech_df = tech_df[ready_for_service_mask]
 
     is_done = tech_df['STATUS ZGŁOSZENIA'].str.lower().str.contains('zakończ', na=False)
     otwarte_df = tech_df[~is_done]
@@ -477,6 +699,9 @@ elif st.session_state.user_role == "serwisant":
             </div>
         </div>
         """, unsafe_allow_html=True)
+
+        # Wyświetlenie załączonych materiałów na telefonie serwisanta
+        wyswietl_multimedia(nr)
 
         col_a, col_b = st.columns(2)
         with col_a:
