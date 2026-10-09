@@ -597,4 +597,281 @@ if st.session_state.user_role == "koordynator":
                                 "INSTALACJA": usterka_dotyczy,
                                 "DATA ZGŁOSZENIA": now_str,
                                 "PRZYJMUJĄCY": "Koordynator",
-                                "
+                                "Imię": first_record.get('Imię', ''),
+                                "Nazwisko": first_record.get('Nazwisko', ''),
+                                "Numer telefonu": first_record.get('Numer telefonu', ''),
+                                "E-mail": first_record.get('E-mail', ''),
+                                "Kod pocztowy": first_record.get('Kod pocztowy', ''),
+                                "Miejscowość": first_record.get('Miejscowość', ''),
+                                "Adres": first_record.get('Adres', ''),
+                                "Rejon Polski": first_record.get('Rejon Polski', ''),
+                                "STATUS ZGŁOSZENIA": status_startowy,
+                                "SERWISANT": "",
+                                "OPIS OD KLIENTA": opis_zgloszenia,
+                                "OPIS": "",
+                                "INFORMACJE DODATKOWE": f"Forma: {forma} | Priorytet: {priorytet} | Producent: {producent}",
+                                "Kwota": "",
+                                "Płatność ": "",
+                                "Zużyte materiały": "",
+                                "Czynności dodatkowe": "",
+                                "Ilość przyjazdów": "1",
+                                "Kwota przyjęta": "",
+                                "Komentarz serwisanta": "",
+                                "Wymaga oferty": str(wymaga_oferty),
+                                "Email handlowca": email_handlowca,
+                                "Etap oferty": etap_startowy,
+                                "Data oferty": now_str[:10],
+                                "Klient_ID": first_record['Klient_ID']
+                            }
+
+                            # FIZYCZNY ZAPIS DO PLIKU CSV
+                            save_ticket_persistently(new_row_dict)
+
+                            # Aktualizacja sesji
+                            st.session_state.df = pd.concat([pd.DataFrame([new_row_dict]), st.session_state.df], ignore_index=True)
+                            st.session_state.show_new_ticket_modal = False
+                            st.success(f"✅ Zgłoszenie #{new_ticket_nr} zapisane trwale na dysku!")
+                            st.rerun()
+
+                        if cancel:
+                            st.session_state.show_new_ticket_modal = False
+                            st.rerun()
+
+                # SZCZEGÓŁOWE ARCHIWUM Z PODGLĄDEM ZDJĘĆ/WIDEO
+                st.markdown("#### 🔍 Szczegóły poszczególnych zleceń:")
+                for i, (_, row) in enumerate(client_records.iterrows(), 1):
+                    nr_t = str(row.get('nr.', 'Brak nr'))
+                    with st.expander(f"Zgłoszenie nr: {nr_t} | Typ: {row.get('INSTALACJA', '')} | Data: {str(row.get('DATA ZGŁOSZENIA', ''))[:10]} | Status: {row.get('STATUS ZGŁOSZENIA', '')}", expanded=(i==1)):
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            st.markdown(f"**Data zgłoszenia:** {row.get('DATA ZGŁOSZENIA', '')}")
+                            st.markdown(f"**Serwisant:** {row.get('SERWISANT', 'Nieprzypisany')}")
+                            st.markdown(f"**Kwota:** {row.get('Kwota', '')} zł")
+                        with c2:
+                            st.markdown(f"**Data serwisu:** {row.get('DATA SERWISU', 'Brak')}")
+                            st.markdown(f"**Płatność:** {row.get('Płatność ', '')}")
+                            st.markdown(f"**Status:** {row.get('STATUS ZGŁOSZENIA', '')}")
+
+                        st.markdown(f"**Opis od klienta:** {row.get('OPIS OD KLIENTA', 'Brak')}")
+                        st.markdown(f"**Opis techniczny:** {row.get('OPIS', 'Brak')}")
+                        st.markdown(f"**Informacje dodatkowe:** {row.get('INFORMACJE DODATKOWE', 'Brak')}")
+
+                        wyswietl_multimedia(nr_t)
+
+# =========================================================================
+# 2. MODUŁ SERWISANTA (MOBILNY Z PIN-EM)
+# =========================================================================
+elif st.session_state.user_role == "serwisant":
+    df = st.session_state.df
+
+    if not st.session_state.tech_pin:
+        col_w, _ = st.columns([1, 4])
+        with col_w:
+            if st.button("⬅️ Wróć do wyboru"):
+                st.session_state.user_role = None
+                st.rerun()
+
+        st.markdown("<h2 style='text-align: center; margin-top: 1rem;'>🔒 Logowanie Serwisanta</h2>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center; color: #718096;'>Wprowadź swój kod PIN rejonu:</p>", unsafe_allow_html=True)
+
+        with st.form("form_pin"):
+            pin_input = st.text_input("KOD PIN (4 cyfry):", type="password", max_chars=4, placeholder="np. 1111")
+            submit_pin = st.form_submit_button("ZALOGUJ DO MOJEGO REJONU", type="primary")
+
+            if submit_pin:
+                if pin_input in PIN_CONFIG:
+                    st.session_state.tech_pin = pin_input
+                    st.success("Zalogowano pomyślnie!")
+                    st.rerun()
+                else:
+                    st.error("❌ Błędny PIN. Wprowadź poprawny kod.")
+
+        with st.expander("ℹ️ Kody PIN dla prezentacji (ściągawka)"):
+            st.write("• **1110** - Rejon 0 (Mazowsze - Leszek)")
+            st.write("• **1111** - Rejon 2 (Lubelskie/Świętokrzyskie - Stanisław)")
+            st.write("• **1112** - Rejon 6 (Wielkopolskie - Wojtek)")
+            st.write("• **1113** - Rejon 8 (Pomorze/Kujawy - Mikołaj)")
+            st.write("• **1114** - Rejon 9 (Łódzkie - Artur)")
+            st.write("• **9999** - Wszystkie rejony")
+        st.stop()
+
+    cfg = PIN_CONFIG[st.session_state.tech_pin]
+    rejon_kod = cfg["rejon_kod"]
+    rejon_nazwa = cfg["nazwa_rejonu"]
+    domyslny_tech = cfg["domyslny_serwisant"]
+
+    col_h1, col_h2 = st.columns([3, 1])
+    with col_h1:
+        st.markdown(f"**📍 {rejon_nazwa}**")
+        st.caption(f"Serwisant: **{domyslny_tech}**")
+    with col_h2:
+        if st.button("Wyloguj"):
+            st.session_state.tech_pin = None
+            st.session_state.active_ticket_nr = None
+            st.rerun()
+
+    if rejon_kod == "ALL":
+        tech_df = df.copy()
+    else:
+        mask_rejon = (
+            df['Rejon Polski'].str.contains(f"Rejon {rejon_kod}", case=False, na=False) |
+            df['Kod pocztowy'].str.startswith(f"{rejon_kod}")
+        )
+        tech_df = df[mask_rejon]
+
+    ready_for_service_mask = (
+        (tech_df['Etap oferty'] != 'Czeka na ofertę handlowca') &
+        (tech_df['Etap oferty'] != 'Oczekiwanie na akceptację klienta')
+    )
+    tech_df = tech_df[ready_for_service_mask]
+
+    is_done = tech_df['STATUS ZGŁOSZENIA'].str.lower().str.contains('zakończ|anulow', na=False)
+    otwarte_df = tech_df[~is_done]
+    zakonczone_df = tech_df[is_done]
+
+    tab1, tab2 = st.tabs([f"⏳ Do zrobienia ({len(otwarte_df)})", f"✅ Zakończone ({len(zakonczone_df)})"])
+
+    if st.session_state.active_ticket_nr:
+        curr_rows = df[df['nr.'] == str(st.session_state.active_ticket_nr)]
+        if not curr_rows.empty:
+            ticket = curr_rows.iloc[0]
+            st.markdown("---")
+            st.markdown(f"#### 🛠️ Raport zlecenia #{ticket['nr.']}")
+            st.caption(f"Klient: {ticket['Imię']} {ticket['Nazwisko']} | {ticket['Miejscowość']}, {ticket['Adres']}")
+
+            with st.form("form_rozliczenie_serwisant"):
+                st.markdown("##### 1. Co zostało zrobione?")
+                komentarz_serw = st.text_area(
+                    "Komentarz serwisanta (diagnoza / co naprawiono):",
+                    value=ticket.get('Komentarz serwisanta', '') or ticket.get('OPIS', ''),
+                    placeholder="np. Odpowietrzono układ, wymieniono naczynie przeponowe..."
+                )
+                materialy = st.text_input(
+                    "Zużyte materiały:",
+                    value=ticket.get('Zużyte materiały', ''),
+                    placeholder="np. Pompka Wilo, 10L glikol, naczynie 18L..."
+                )
+                czynnosci = st.text_input(
+                    "Czynności dodatkowe:",
+                    value=ticket.get('Czynności dodatkowe', ''),
+                    placeholder="np. Przegląd kotłowni, odpowietrzenie..."
+                )
+                przyjazdy = st.selectbox("Ilość przyjazdów:", ["1", "2", "3", "Więcej"], index=0)
+
+                st.markdown("##### 2. Rozliczenie i status")
+                f_col1, f_col2 = st.columns(2)
+                with f_col1:
+                    kwota_pobrana = st.text_input(
+                        "Kwota przyjęta (zł):",
+                        value=ticket.get('Kwota przyjęta', '') or ticket.get('Kwota', '')
+                    )
+                with f_col2:
+                    forma_plat = st.selectbox(
+                        "Forma płatności:",
+                        ["Gotówka", "Przelew", "Gwarancja (0 zł)", "Czeka na przelew"],
+                        index=0
+                    )
+
+                status_nowy = st.selectbox(
+                    "Nowy status:",
+                    ["zakończone", "w toku (wymaga części)", "do ponownego przyjazdu"],
+                    index=0
+                )
+
+                c_save, c_back = st.columns(2)
+                with c_save:
+                    zapisz = st.form_submit_button("💾 ZAPISZ RAPORT", type="primary")
+                with c_back:
+                    anuluj = st.form_submit_button("Wróć bez zmian")
+
+                if zapisz:
+                    idx = curr_rows.index[0]
+                    df.at[idx, 'Komentarz serwisanta'] = komentarz_serw
+                    df.at[idx, 'Zużyte materiały'] = materialy
+                    df.at[idx, 'Czynności dodatkowe'] = czynnosci
+                    df.at[idx, 'Ilość przyjazdów'] = przyjazdy
+                    df.at[idx, 'Kwota przyjęta'] = kwota_pobrana
+                    df.at[idx, 'Płatność '] = forma_plat
+                    df.at[idx, 'STATUS ZGŁOSZENIA'] = status_nowy
+                    df.at[idx, 'DATA SERWISU'] = datetime.date.today().strftime("%Y-%m-%d")
+                    df.at[idx, 'SERWISANT'] = domyslny_tech
+
+                    # TRWAŁY ZAPIS RAPORTU
+                    save_ticket_persistently(df.loc[idx].to_dict())
+
+                    st.session_state.df = df
+                    st.session_state.active_ticket_nr = None
+                    st.success("✅ Raport zapisany!")
+                    st.rerun()
+
+                if anuluj:
+                    st.session_state.active_ticket_nr = None
+                    st.rerun()
+
+    def render_ticket_card(row, is_open=True):
+        nr = row.get('nr.', '')
+        typ = row.get('INSTALACJA', '').lower()
+        imie_nazwisko = f"{row.get('Imię', '')} {row.get('Nazwisko', '')}".strip() or "Brak danych"
+        tel = str(row.get('Numer telefonu', '')).strip()
+        tel_clean = "".join([c for c in tel.split(',')[0].split('/')[0] if c.isdigit()])
+        adres_full = f"{row.get('Kod pocztowy', '')} {row.get('Miejscowość', '')}, {row.get('Adres', '')}".strip(', ')
+        map_query = urllib.parse.quote(f"{row.get('Adres', '')}, {row.get('Miejscowość', '')}")
+
+        badge_type = "badge-solar" if "solar" in typ else ("badge-foto" if "foto" in typ else ("badge-pompa" if "pompa" in typ else "badge-magazyn"))
+
+        st.markdown(f"""
+        <div class="mobile-card">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <span style="font-weight:bold; font-size:1.1rem; color:#1a202c;">#{nr}</span>
+                <span class="badge {badge_type}">{typ.upper() or 'SERWIS'}</span>
+            </div>
+            <div style="font-size:1.05rem; font-weight:700; color:#2d3748;">👤 {imie_nazwisko}</div>
+            <div style="font-size:0.95rem; color:#4a5568; margin-top:3px;">📍 {adres_full}</div>
+            <div style="margin-top:8px; padding:8px; background:#edf2f7; border-radius:8px; font-size:0.9rem; color:#2d3748;">
+                <b>Usterka:</b> {row.get('OPIS OD KLIENTA', 'Brak opisu')}
+            </div>
+            <div style="display:flex; justify-content:space-between; margin-top:8px; font-size:0.85rem; color:#718096;">
+                <span>💰 Wycena: <b>{row.get('Kwota', '0')} zł</b></span>
+                <span>📅 {str(row.get('DATA ZGŁOSZENIA', ''))[:10]}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        wyswietl_multimedia(nr)
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            if tel_clean:
+                st.markdown(f'<a href="tel:{tel_clean}" target="_blank" style="text-decoration:none;"><button style="width:100%; height:45px; border-radius:10px; background:#2b6cb0; color:white; border:none; font-weight:bold; cursor:pointer;">📞 Zadzwoń</button></a>', unsafe_allow_html=True)
+        with col_b:
+            if row.get('Miejscowość', ''):
+                st.markdown(f'<a href="https://www.google.com/maps/search/?api=1&query={map_query}" target="_blank" style="text-decoration:none;"><button style="width:100%; height:45px; border-radius:10px; background:#38a169; color:white; border:none; font-weight:bold; cursor:pointer;">🗺️ Nawiguj</button></a>', unsafe_allow_html=True)
+
+        if is_open:
+            if st.button(f"📝 Uzupełnij raport / Zakończ #{nr}", key=f"btn_m_{nr}", type="primary"):
+                st.session_state.active_ticket_nr = nr
+                st.rerun()
+
+        st.write("")
+
+    with tab1:
+        if otwarte_df.empty:
+            st.info("🎉 Brak otwartych zleceń w Twoim rejonie!")
+        else:
+            q = st.text_input("🔍 Szukaj w rejonie (miejscowość / nazwisko):", key="search_open").strip().lower()
+            view_df = otwarte_df
+            if q:
+                view_df = view_df[
+                    view_df['Nazwisko'].str.lower().str.contains(q, na=False) |
+                    view_df['Miejscowość'].str.lower().str.contains(q, na=False) |
+                    view_df['Adres'].str.lower().str.contains(q, na=False)
+                ]
+            for _, row in view_df.head(25).iterrows():
+                render_ticket_card(row, is_open=True)
+
+    with tab2:
+        if zakonczone_df.empty:
+            st.info("Brak historii zleceń zakończonych w tym rejonie.")
+        else:
+            for _, row in zakonczone_df.head(20).iterrows():
+                render_ticket_card(row, is_open=False)
