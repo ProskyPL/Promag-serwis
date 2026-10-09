@@ -11,8 +11,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Katalog na załączniki (zdjęcia i filmiki)
+# Katalogi na dane i załączniki
 ATTACHMENTS_DIR = "zalaczniki"
+NOWE_FILE = "nowe_zgloszenia.csv"
 os.makedirs(ATTACHMENTS_DIR, exist_ok=True)
 
 # Style responsywne pod komputery i smartfony
@@ -83,16 +84,26 @@ def wyswietl_multimedia(ticket_nr):
                         st.video(file_path)
                         st.caption(f"🎥 {filename}")
 
-@st.cache_data
-def load_data():
+# Ładowanie danych z obsługą trwałego pliku CSV
+def load_all_data():
     file_path = "Serwisowa posortowana.xlsx"
+    base_df = pd.DataFrame()
     if os.path.exists(file_path):
         try:
-            df = pd.read_excel(file_path, sheet_name="Wszystkie posortowane")
+            base_df = pd.read_excel(file_path, sheet_name="Wszystkie posortowane")
         except Exception:
-            df = pd.read_excel(file_path, sheet_name=0)
+            base_df = pd.read_excel(file_path, sheet_name=0)
+
+    # Wczytanie trwale zapisanych nowych zgłoszeń z dysku
+    if os.path.exists(NOWE_FILE):
+        try:
+            nowe_df = pd.read_csv(NOWE_FILE, dtype=str)
+            df = pd.concat([nowe_df, base_df], ignore_index=True)
+            df = df.drop_duplicates(subset=['nr.'], keep='first')
+        except Exception:
+            df = base_df
     else:
-        df = pd.DataFrame()
+        df = base_df
 
     cols_to_str = ['nr.', 'INSTALACJA', 'PRZYJMUJĄCY', 'Imię', 'Nazwisko', 'Numer telefonu', 
                    'Kod pocztowy', 'Miejscowość', 'Adres', 'Rejon Polski', 'STATUS ZGŁOSZENIA', 
@@ -104,39 +115,50 @@ def load_data():
     if 'DATA ZGŁOSZENIA' in df.columns:
         df['DATA ZGŁOSZENIA'] = df['DATA ZGŁOSZENIA'].fillna('').astype(str)
 
-    if 'Zużyte materiały' not in df.columns:
-        df['Zużyte materiały'] = ''
-    if 'Czynności dodatkowe' not in df.columns:
-        df['Czynności dodatkowe'] = ''
-    if 'Ilość przyjazdów' not in df.columns:
-        df['Ilość przyjazdów'] = '1'
-    if 'Kwota przyjęta' not in df.columns:
-        df['Kwota przyjęta'] = df['Kwota']
-    if 'Komentarz serwisanta' not in df.columns:
-        df['Komentarz serwisanta'] = ''
+    for opt_col in ['Zużyte materiały', 'Czynności dodatkowe', 'Ilość przyjazdów', 'Kwota przyjęta', 
+                    'Komentarz serwisanta', 'Email handlowca', 'Etap oferty', 'Data oferty']:
+        if opt_col not in df.columns:
+            df[opt_col] = ''
+        else:
+            df[opt_col] = df[opt_col].fillna('').astype(str)
+
     if 'Wymaga oferty' not in df.columns:
         df['Wymaga oferty'] = False
-    if 'Email handlowca' not in df.columns:
-        df['Email handlowca'] = ''
-    if 'Etap oferty' not in df.columns:
-        df['Etap oferty'] = ''
-    if 'Data oferty' not in df.columns:
-        df['Data oferty'] = ''
 
     df['Klient_ID'] = df.apply(get_clean_client_id, axis=1)
     return df
 
+# Trwały zapis do pliku CSV na serwerze
+def save_ticket_persistently(ticket_dict):
+    df_single = pd.DataFrame([ticket_dict])
+    if os.path.exists(NOWE_FILE):
+        existing_nowe = pd.read_csv(NOWE_FILE, dtype=str)
+        if str(ticket_dict.get('nr.', '')) in existing_nowe['nr.'].astype(str).values:
+            existing_nowe = existing_nowe[existing_nowe['nr.'].astype(str) != str(ticket_dict.get('nr.', ''))]
+        updated = pd.concat([df_single, existing_nowe], ignore_index=True)
+        updated.to_csv(NOWE_FILE, index=False, encoding='utf-8-sig')
+    else:
+        df_single.to_csv(NOWE_FILE, index=False, encoding='utf-8-sig')
+
 if 'df' not in st.session_state:
-    st.session_state.df = load_data()
+    st.session_state.df = load_all_data()
+
+def get_next_ticket_id():
+    existing_nrs = st.session_state.df['nr.'].astype(str).tolist()
+    max_id = 0
+    for n in existing_nrs:
+        clean = n.replace('N', '').replace('#', '').strip()
+        if clean.isdigit():
+            val = int(clean)
+            if val > max_id:
+                max_id = val
+    return max_id + 1
 
 if 'user_role' not in st.session_state:
     st.session_state.user_role = None
 
 if 'tech_pin' not in st.session_state:
     st.session_state.tech_pin = None
-
-if 'next_ticket_id' not in st.session_state:
-    st.session_state.next_ticket_id = 1
 
 if 'selected_client_id' not in st.session_state:
     st.session_state.selected_client_id = None
@@ -185,10 +207,8 @@ if st.session_state.user_role == "koordynator":
     st.sidebar.subheader("📍 Rejony Pocztowe")
     st.sidebar.caption("Liczba nowych zgłoszeń: **od wczoraj do dziś**")
 
-    # Obliczenie daty wczorajszej (odcięcie archiwum)
     yesterday_str = (datetime.date.today() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
 
-    # Zliczamy wyłącznie świeże zgłoszenia (od wczoraj do dziś)
     recent_mask = df['DATA ZGŁOSZENIA'].str[:10] >= yesterday_str
     recent_df = df[recent_mask]
     counts_recent = recent_df['Rejon Polski'].value_counts()
@@ -250,6 +270,7 @@ if st.session_state.user_role == "koordynator":
                             if st.button("✅ Oferta wysłana do klienta", key=f"btn_off_sent_{o_nr}", type="primary"):
                                 df.at[idx, 'Etap oferty'] = 'Oczekiwanie na akceptację klienta'
                                 df.at[idx, 'STATUS ZGŁOSZENIA'] = 'Oczekiwanie na akceptację'
+                                save_ticket_persistently(df.loc[idx].to_dict())
                                 st.session_state.df = df
                                 st.success("Zmieniono etap na: Oczekiwanie na akceptację klienta")
                                 st.rerun()
@@ -259,6 +280,7 @@ if st.session_state.user_role == "koordynator":
                             if st.button("🚀 Klient zaakceptował → Przekaż do serwisu", key=f"btn_off_accept_{o_nr}", type="primary"):
                                 df.at[idx, 'Etap oferty'] = 'Zaakceptowano (w serwisie)'
                                 df.at[idx, 'STATUS ZGŁOSZENIA'] = 'w toku'
+                                save_ticket_persistently(df.loc[idx].to_dict())
                                 st.session_state.df = df
                                 st.success("✅ Oferta zaakceptowana! Zlecenie przekazane do serwisu.")
                                 st.rerun()
@@ -266,6 +288,7 @@ if st.session_state.user_role == "koordynator":
                             if st.button("❌ Klient odrzucił ofertę", key=f"btn_off_rej_{o_nr}"):
                                 df.at[idx, 'Etap oferty'] = 'Odrzucona przez klienta'
                                 df.at[idx, 'STATUS ZGŁOSZENIA'] = 'anulowane'
+                                save_ticket_persistently(df.loc[idx].to_dict())
                                 st.session_state.df = df
                                 st.warning("Zgłoszenie anulowane.")
                                 st.rerun()
@@ -300,7 +323,7 @@ if st.session_state.user_role == "koordynator":
             filtered_df = filtered_df[query_mask]
 
         clients_unique = filtered_df.drop_duplicates(subset=['Klient_ID'])
-        st.write(f"Znaleziono klientów: **{len(clients_unique)}** (wszystkich pasujących zgłoszeń: **{len(filtered_df)}**)")
+        st.write(f"Znaleziono klientów: **{len(clients_unique)}** (wszystkich zgłoszeń w filtrze: **{len(filtered_df)}**)")
 
         if len(clients_unique) > 0:
             st.markdown("##### Wyniki wyszukiwania — wybierz klienta:")
@@ -392,11 +415,12 @@ if st.session_state.user_role == "koordynator":
                 summary_df = pd.DataFrame(summary_data)
                 st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
-                # FORMULARZ NOWEGO ZGŁOSZENIA Z MODYFIKACJĄ DATY I MULTIMEDIAMI
+                # FORMULARZ NOWEGO ZGŁOSZENIA Z TRWAŁYM ZAPISEM
                 if st.session_state.show_new_ticket_modal:
                     st.info("📝 Rejestracja nowego zgłoszenia:")
                     
-                    new_ticket_nr_preview = f"N{st.session_state.next_ticket_id}"
+                    next_id = get_next_ticket_id()
+                    new_ticket_nr_preview = f"N{next_id}"
 
                     # 1. Zmiana daty
                     custom_date_enabled = st.checkbox("📅 Zmień datę i czas zgłoszenia (domyślnie: teraz)")
@@ -411,8 +435,8 @@ if st.session_state.user_role == "koordynator":
                     else:
                         now_str = now_default.strftime("%Y-%m-%d %H:%M")
 
-                    # 2. Załączanie zdjęć i filmików przed zatwierdzeniem
-                    st.markdown("📷 **Załącz zdjęcia lub filmiki (zanim cokolwiek stanie się ze zgłoszeniem):**")
+                    # 2. Załączanie zdjęć i filmików
+                    st.markdown("📷 **Załącz zdjęcia lub filmiki:**")
                     uploaded_media = st.file_uploader(
                         "Przeciągnij zdjęcia lub filmiki (JPG, PNG, MP4, MOV...):",
                         type=['png', 'jpg', 'jpeg', 'webp', 'mp4', 'mov', 'avi'],
@@ -442,16 +466,16 @@ if st.session_state.user_role == "koordynator":
 
                         c_save, c_cancel = st.columns([1, 4])
                         with c_save:
-                            submitted = st.form_submit_button("💾 ZAPISZ ZGŁOSZENIE", type="primary")
+                            submitted = st.form_submit_button("💾 ZAPISZ ZGŁOSZENIE (NA STAŁE)", type="primary")
                         with c_cancel:
                             cancel = st.form_submit_button("Anuluj")
 
                         if submitted:
-                            new_ticket_nr = f"N{st.session_state.next_ticket_id}"
+                            new_ticket_nr = f"N{next_id}"
                             etap_startowy = "Czeka na ofertę handlowca" if wymaga_oferty else ""
                             status_startowy = "Czeka na ofertę handlowca" if wymaga_oferty else "w toku"
 
-                            # Zapis przesłanych plików multimedialnych do folderu lokalnego
+                            # Zapis plików multimedialnych
                             if uploaded_media:
                                 target_dir = os.path.join(ATTACHMENTS_DIR, str(new_ticket_nr))
                                 os.makedirs(target_dir, exist_ok=True)
@@ -485,17 +509,20 @@ if st.session_state.user_role == "koordynator":
                                 "Ilość przyjazdów": "1",
                                 "Kwota przyjęta": "",
                                 "Komentarz serwisanta": "",
-                                "Wymaga oferty": wymaga_oferty,
+                                "Wymaga oferty": str(wymaga_oferty),
                                 "Email handlowca": email_handlowca,
                                 "Etap oferty": etap_startowy,
                                 "Data oferty": now_str[:10],
                                 "Klient_ID": first_record['Klient_ID']
                             }
 
+                            # FIZYCZNY ZAPIS DO PLIKU CSV
+                            save_ticket_persistently(new_row_dict)
+
+                            # Aktualizacja sesji
                             st.session_state.df = pd.concat([pd.DataFrame([new_row_dict]), st.session_state.df], ignore_index=True)
-                            st.session_state.next_ticket_id += 1
                             st.session_state.show_new_ticket_modal = False
-                            st.success(f"✅ Zapisano zgłoszenie #{new_ticket_nr}!")
+                            st.success(f"✅ Zgłoszenie #{new_ticket_nr} zapisane trwale na dysku!")
                             st.rerun()
 
                         if cancel:
@@ -521,7 +548,6 @@ if st.session_state.user_role == "koordynator":
                         st.markdown(f"**Opis techniczny:** {row.get('OPIS', 'Brak')}")
                         st.markdown(f"**Informacje dodatkowe:** {row.get('INFORMACJE DODATKOWE', 'Brak')}")
 
-                        # Wyświetlenie załączonych zdjęć i filmików
                         wyswietl_multimedia(nr_t)
 
 # =========================================================================
@@ -662,6 +688,9 @@ elif st.session_state.user_role == "serwisant":
                     df.at[idx, 'DATA SERWISU'] = datetime.date.today().strftime("%Y-%m-%d")
                     df.at[idx, 'SERWISANT'] = domyslny_tech
 
+                    # TRWAŁY ZAPIS RAPORTU
+                    save_ticket_persistently(df.loc[idx].to_dict())
+
                     st.session_state.df = df
                     st.session_state.active_ticket_nr = None
                     st.success("✅ Raport zapisany!")
@@ -700,7 +729,6 @@ elif st.session_state.user_role == "serwisant":
         </div>
         """, unsafe_allow_html=True)
 
-        # Wyświetlenie załączonych materiałów na telefonie serwisanta
         wyswietl_multimedia(nr)
 
         col_a, col_b = st.columns(2)
