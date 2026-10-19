@@ -278,6 +278,7 @@ if st.session_state.user_role == "koordynator":
         st.session_state.selected_client_id = None
         st.session_state.show_edit_client_modal = False
         st.session_state.show_new_ticket_modal = False
+        st.session_state.active_ticket_nr = None
         st.rerun()
 
     st.sidebar.markdown("---")
@@ -486,7 +487,7 @@ if st.session_state.user_role == "koordynator":
             if st.button("➕ DODAJ NOWEGO KLIENTA", type="primary", use_container_width=True):
                 st.session_state.show_new_client_modal = True
 
-        # MODAL / FORMULARZ DODAWANIA NOWEGO KLIENTA (Z POPRAWIONYMI WARTOŚCIAMI BOOL)
+        # MODAL / FORMULARZ DODAWANIA NOWEGO KLIENTA
         if st.session_state.show_new_client_modal:
             st.info("👤 Wprowadź dane nowego klienta do bazy:")
             with st.form("form_dodaj_klienta"):
@@ -955,6 +956,196 @@ elif st.session_state.user_role == "serwisant":
             st.session_state.active_ticket_nr = None
             st.rerun()
 
+    # -------------------------------------------------------------------------
+    # JEŚLI KLIKNIĘTO ZAMKNIĘCIE ZLECENIA -> WYŚWIETL DEDYKOWANY PEŁNY FORMULARZ
+    # -------------------------------------------------------------------------
+    if st.session_state.active_ticket_nr:
+        curr_rows = df[df['nr.'].astype(str) == str(st.session_state.active_ticket_nr)]
+        
+        if curr_rows.empty:
+            st.error("Nie znaleziono wybranego zlecenia w bazie.")
+            if st.button("⬅️ Wróć do listy zleceń"):
+                st.session_state.active_ticket_nr = None
+                st.rerun()
+            st.stop()
+
+        ticket = curr_rows.iloc[0]
+        
+        if st.button("⬅️ Wróć do listy zleceń bez zapisywania"):
+            st.session_state.active_ticket_nr = None
+            st.rerun()
+
+        st.markdown(f"### 🛠️ Rozliczenie / Zamknięcie zlecenia #{ticket['nr.']}")
+        st.caption(f"Klient: **{ticket['Imię']} {ticket['Nazwisko']}** | 📍 {ticket['Miejscowość']}, {ticket['Adres']}")
+
+        poradzil_sobie = st.radio(
+            "Czy poradziłeś sobie z tym zleceniem?*",
+            ["TAK — Usterka została usunięta", "NIE — Zlecenie nieukończone / Wymaga powrotu"],
+            key=f"tech_outcome_radio_{ticket['nr.']}"
+        )
+
+        is_success = "TAK" in poradzil_sobie
+
+        klient_id_curr = ticket.get('Klient_ID', '')
+        klient_ma_juz_tabliczki = (
+            (df['Klient_ID'] == klient_id_curr) & 
+            (df['Tabliczki_OK'].astype(str).str.lower().isin(['true', '1', 'tak']))
+        ).any()
+
+        with st.form(f"form_rozliczenie_{ticket['nr.']}"):
+            if is_success:
+                st.success("✅ **Zlecenie zakończone sukcesem:**")
+                opis_prac = st.text_area(
+                    "1. Opis tego, co zostało zrobione / wykonane czynności:*",
+                    value=ticket.get('Komentarz serwisanta', '') or ticket.get('OPIS', ''),
+                    placeholder="np. Odpowietrzono układ, wymieniono pompę obiegową..."
+                )
+                zuzyte_czesci = st.text_area(
+                    "2. Lista wykorzystanych części i materiałów:",
+                    value=ticket.get('Zużyte materiały', ''),
+                    placeholder="np. Pompa Wilo, zawór zwrotny..."
+                )
+                zalecenia_klient = st.text_area(
+                    "3. Zalecenia dla klienta (OBOWIĄZKOWE):*",
+                    value=ticket.get('Zalecenia dla klienta', ''),
+                    placeholder="np. Kontrola ciśnienia na manometrze za 48h..."
+                )
+                przyczyna_nieuk = ""
+                brakujace_mat = ""
+                status_domyslny_idx = 0
+            else:
+                st.error("⚠️ **Zlecenie nie zostało ukończone:**")
+                przyczyna_nieuk = st.text_area(
+                    "1. Dokładny opis przyczyny:*",
+                    value=ticket.get('Przyczyna nieukończenia', '') or ticket.get('Komentarz serwisanta', ''),
+                    placeholder="np. Uszkodzona elektronika inwertera..."
+                )
+                brakujace_mat = st.text_area(
+                    "2. Lista brakujących części do zamówienia:*",
+                    value=ticket.get('Brakujące materiały', ''),
+                    placeholder="np. Nowa płyta główna inwertera..."
+                )
+                zalecenia_klient = st.text_area(
+                    "3. Zalecenia dla klienta (OBOWIĄZKOWE):*",
+                    value=ticket.get('Zalecenia dla klienta', ''),
+                    placeholder="np. Wyłączono bezpiecznik główny..."
+                )
+                opis_prac = ""
+                zuzyte_czesci = ""
+                status_domyslny_idx = 1
+
+            st.markdown("---")
+            st.markdown("##### 📸 Zdjęcia z obiektu & Tabliczki znamionowe")
+
+            if klient_ma_juz_tabliczki:
+                st.success("✅ Tabliczki znamionowe tego klienta są już w bazie.")
+                potwierdzenie_tabliczek = True
+            else:
+                st.warning("📌 Brak tabliczek znamionowych w bazie tego klienta. Wykonaj ich zdjęcia!")
+                potwierdzenie_tabliczek = st.checkbox(
+                    "✅ POTWIERDZAM: Wykonałem i załączam zdjęcia tabliczek znamionowych."
+                )
+
+            tech_media = st.file_uploader(
+                "Załącz zdjęcia:",
+                type=['png', 'jpg', 'jpeg', 'webp', 'mp4'],
+                accept_multiple_files=True,
+                key=f"tech_upload_{ticket['nr.']}"
+            )
+
+            st.markdown("---")
+            potrzebna_oferta = st.checkbox(
+                "⚠️ WYMAGANA OFERTA HANDLOWA DLA KLIENTA (dorobienie / modyfikacja)",
+                value=bool(ticket.get('Wymaga oferty', False))
+            )
+            szczegoly_oferty = ""
+            if potrzebna_oferta:
+                szczegoly_oferty = st.text_area(
+                    "Co klient musi dołożyć / co wycenić:*",
+                    value=ticket.get('Szczegóły oferty', ''),
+                    placeholder="np. Wycena dodatkowego bufora 200L..."
+                )
+
+            st.markdown("---")
+            f_col1, f_col2 = st.columns(2)
+            with f_col1:
+                kwota_pobrana = st.text_input(
+                    "Kwota pobrana (zł):",
+                    value=ticket.get('Kwota przyjęta', '') or ticket.get('Kwota', '') or ("0" if not is_success else "")
+                )
+                przyjazdy = st.selectbox("Ilość przyjazdów:", ["1", "2", "3", "Więcej"], index=0)
+            with f_col2:
+                forma_plat = st.selectbox(
+                    "Forma płatności:",
+                    ["Gotówka", "Przelew", "Gwarancja (0 zł)", "Czeka na przelew"],
+                    index=0
+                )
+                status_opcje = ["zakończone", "do ponownego przyjazdu (brak części)", "w toku (wymaga części)", "anulowane"]
+                status_nowy = st.selectbox("Status zlecenia:", status_opcje, index=status_domyslny_idx)
+
+            zapisz = st.form_submit_button("💾 ZAPISZ RAPORT I ZAMKNIJ", type="primary", use_container_width=True)
+
+            if zapisz:
+                if not zalecenia_klient.strip():
+                    st.error("❌ Pole 'Zalecenia dla klienta' jest obowiązkowe!")
+                elif not potwierdzenie_tabliczek:
+                    st.error("❌ Musisz potwierdzić sprawdzenie tabliczek znamionowych!")
+                elif is_success and not opis_prac.strip():
+                    st.error("❌ Opis wykonanych czynności jest wymagany!")
+                elif not is_success and (not przyczyna_nieuk.strip() or not brakujace_mat.strip()):
+                    st.error("❌ Przyczyna oraz lista braków są wymagane!")
+                elif potrzebna_oferta and not szczegoly_oferty.strip():
+                    st.error("❌ Wpisz szczegóły potrzebnej oferty!")
+                else:
+                    idx = curr_rows.index[0]
+                    if is_success:
+                        df.at[idx, 'Komentarz serwisanta'] = opis_prac
+                        df.at[idx, 'Zalecenia dla klienta'] = zalecenia_klient.strip()
+                        df.at[idx, 'Zużyte materiały'] = zuzyte_czesci.strip()
+                        df.at[idx, 'Przyczyna nieukończenia'] = ""
+                        df.at[idx, 'Brakujące materiały'] = ""
+                    else:
+                        df.at[idx, 'Komentarz serwisanta'] = przyczyna_nieuk
+                        df.at[idx, 'Przyczyna nieukończenia'] = przyczyna_nieuk.strip()
+                        df.at[idx, 'Brakujące materiały'] = brakujace_mat.strip()
+                        df.at[idx, 'Zalecenia dla klienta'] = zalecenia_klient.strip()
+                        df.at[idx, 'Zużyte materiały'] = ""
+
+                    if potwierdzenie_tabliczek or klient_ma_juz_tabliczki:
+                        mask_c = (df['Klient_ID'] == klient_id_curr)
+                        df.loc[mask_c, 'Tabliczki_OK'] = 'True'
+                        df.at[idx, 'Tabliczki_OK'] = 'True'
+
+                    if tech_media:
+                        target_dir = os.path.join(ATTACHMENTS_DIR, str(ticket['nr.']))
+                        os.makedirs(target_dir, exist_ok=True)
+                        for file in tech_media:
+                            with open(os.path.join(target_dir, file.name), "wb") as f_out:
+                                f_out.write(file.getbuffer())
+
+                    if potrzebna_oferta:
+                        df.at[idx, 'Wymaga oferty'] = True
+                        df.at[idx, 'Etap oferty'] = '🚨 PILNE: Zgłoszenie z serwisu (wymaga wyceny modyfikacji)'
+                        df.at[idx, 'Szczegóły oferty'] = szczegoly_oferty.strip()
+                        df.at[idx, 'Data oferty'] = datetime.date.today().strftime("%Y-%m-%d")
+
+                    df.at[idx, 'Ilość przyjazdów'] = przyjazdy
+                    df.at[idx, 'Kwota przyjęta'] = kwota_pobrana
+                    df.at[idx, 'Płatność '] = forma_plat
+                    df.at[idx, 'STATUS ZGŁOSZENIA'] = status_nowy
+                    df.at[idx, 'DATA SERWISU'] = datetime.date.today().strftime("%Y-%m-%d")
+                    df.at[idx, 'SERWISANT'] = domyslny_tech
+
+                    st.session_state.df = df
+                    save_ticket_persistently(df.loc[idx].to_dict(), current_full_df=st.session_state.df)
+
+                    st.session_state.active_ticket_nr = None
+                    st.success("✅ Raport został zapisany!")
+                    st.rerun()
+
+        # Izolacja formularza – zapobiega renderowaniu listy w tle
+        st.stop()
+
     # Filtrowanie rejonu
     if rejon_kod == "ALL":
         tech_df = df.copy()
@@ -986,224 +1177,6 @@ elif st.session_state.user_role == "serwisant":
         f"✅ Zakończone ({len(zakonczone_df)})",
         "🔍 Szukaj klienta (Cała historia)"
     ])
-
-    # FORMULARZ ZAMKNIĘCIA / ROZLICZENIA ZLECENIA (DYNAMICZNY: TAK / NIE + OFERTA + INTELIGENTNE TABLICZKI)
-    if st.session_state.active_ticket_nr:
-        curr_rows = df[df['nr.'] == str(st.session_state.active_ticket_nr)]
-        if not curr_rows.empty:
-            ticket = curr_rows.iloc[0]
-            st.markdown("---")
-            st.markdown(f"#### 🛠️ Rozliczenie / Zamknięcie zlecenia #{ticket['nr.']}")
-            st.caption(f"Klient: {ticket['Imię']} {ticket['Nazwisko']} | 📍 {ticket['Miejscowość']}, {ticket['Adres']}")
-
-            st.markdown("##### 1. Wynik prac serwisowych")
-            poradzil_sobie = st.radio(
-                "Czy poradziłeś sobie z tym zleceniem?*",
-                ["TAK — Usterka została usunięta", "NIE — Zlecenie nieukończone / Wymaga powrotu"],
-                key=f"tech_outcome_radio_{ticket['nr.']}"
-            )
-
-            is_success = "TAK" in poradzil_sobie
-
-            # SPRAWDZENIE CZY TABLICZKI TEGO KLIENTA SĄ JUŻ W BAZIE
-            klient_id_curr = ticket.get('Klient_ID', '')
-            klient_ma_juz_tabliczki = (
-                (df['Klient_ID'] == klient_id_curr) & 
-                (df['Tabliczki_OK'].astype(str).str.lower().isin(['true', '1', 'tak']))
-            ).any()
-
-            with st.form("form_rozliczenie_serwisant"):
-                if is_success:
-                    st.success("✅ **Zlecenie zakończone sukcesem:**")
-                    opis_prac = st.text_area(
-                        "1. Opis tego, co zostało zrobione / wykonane czynności:*",
-                        value=ticket.get('Komentarz serwisanta', '') or ticket.get('OPIS', ''),
-                        placeholder="np. Odpowietrzono układ solarny, wymieniono pompę obiegową, sprawdzono ciśnienie robocze...",
-                        help="Wymagany opis wykonanych prac."
-                    )
-                    zuzyte_czesci = st.text_area(
-                        "2. Lista wykorzystanych części i materiałów:",
-                        value=ticket.get('Zużyte materiały', ''),
-                        placeholder="np. Pompa Wilo 25/6 (1 szt.), zawór zwrotny 3/4 (1 szt.), glikol 10L...",
-                        help="Wypisz wszystkie zużyte komponenty."
-                    )
-                    zalecenia_klient = st.text_area(
-                        "3. Zalecenia dla klienta (OBOWIĄZKOWE):*",
-                        value=ticket.get('Zalecenia dla klienta', ''),
-                        placeholder="np. Kontrola ciśnienia na manometrze za 48h, nie wyłączać zasilania sterownika, zgłosić spadek ciśnienia...",
-                        help="Pole wymagane: instrukcje i zalecenia przekazane klientowi po naprawie."
-                    )
-                    przyczyna_nieuk = ""
-                    brakujace_mat = ""
-                    status_domyslny_idx = 0
-                else:
-                    st.error("⚠️ **Zlecenie nie zostało ukończone:**")
-                    przyczyna_nieuk = st.text_area(
-                        "1. Dokładny opis przyczyny (dlaczego nie udało się zakończyć zlecenia):*",
-                        value=ticket.get('Przyczyna nieukończenia', '') or ticket.get('Komentarz serwisanta', ''),
-                        placeholder="np. Uszkodzona elektronika inwertera nienaprawialna na miejscu, instalacja wymaga rozbudowy/przeróbki...",
-                        help="Wymagany opis problemu napotkanego na miejscu."
-                    )
-                    brakujace_mat = st.text_area(
-                        "2. Lista brakujących części i materiałów do zamówienia:*",
-                        value=ticket.get('Brakujące materiały', ''),
-                        placeholder="np. Nowa płyta główna inwertera Deye 10kW, zawór trójdrogowy 1 cal...",
-                        help="Wymagany spis elementów, które biuro/koordynator musi zamówić."
-                    )
-                    zalecenia_klient = st.text_area(
-                        "3. Zalecenia dla klienta (OBOWIĄZKOWE):*",
-                        value=ticket.get('Zalecenia dla klienta', ''),
-                        placeholder="np. Wyłączono zasilanie instalacji ze względów bezpieczeństwa, oczekiwanie na wycenę i kontakt z koordynatorem...",
-                        help="Pole wymagane: instrukcje bezpieczeństwa i zalecenia dla klienta do czasu kolejnego przyjazdu."
-                    )
-                    opis_prac = ""
-                    zuzyte_czesci = ""
-                    status_domyslny_idx = 1
-
-                st.markdown("---")
-                # MODUŁ ZDJĘĆ Z OBIEKTU + INTELIGENTNE SPRAWDZANIE TABLICZEK
-                st.markdown("##### 📸 Zdjęcia z obiektu & Baza Urządzeń Klienta")
-
-                if klient_ma_juz_tabliczki:
-                    st.success("✅ **Tabliczki znamionowe urządzeń tego klienta są już w bazie.** Nie musisz ich ponownie fotografować!")
-                    potwierdzenie_tabliczek = True
-                else:
-                    st.warning(
-                        "📌 **Brak tabliczek znamionowych w bazie tego klienta:**\n\n"
-                        "Wykonaj zdjęcia tabliczek falownika, magazynu, pompy ciepła i osprzętu. "
-                        "Gdy zrobisz to raz, system już nigdy więcej Cię o to nie zapyta!"
-                    )
-                    potwierdzenie_tabliczek = st.checkbox(
-                        "✅ **POTWIERDZAM:** Wykonałem i załączam zdjęcia tabliczek znamionowych komponentów klienta.",
-                        value=False,
-                        help="Zaznaczenie jest wymagane jednorazowo, aby skompletować bazę urządzeń klienta."
-                    )
-
-                tech_media = st.file_uploader(
-                    "Dodaj zdjęcia z naprawy / tabliczek znamionowych (JPG, PNG, MP4...):",
-                    type=['png', 'jpg', 'jpeg', 'webp', 'mp4', 'mov', 'avi'],
-                    accept_multiple_files=True,
-                    key=f"tech_upload_{ticket['nr.']}"
-                )
-
-                st.markdown("---")
-                # MODUŁ POTRZEBY OFERTY HANDLOWEJ (W OBU WARIANTACH)
-                st.markdown("##### 💼 Zapotrzebowanie na ofertę handlową (dla koordynatora)")
-                potrzebna_oferta = st.checkbox(
-                    "⚠️ WYMAGANA OFERTA HANDLOWA DLA KLIENTA (dorobienie, modyfikacja, dołożenie do instalacji lub rozbudowa)",
-                    value=bool(ticket.get('Wymaga oferty', False)),
-                    help="Zaznacz, jeśli klient potrzebuje dodatkowej płatnej wyceny/modyfikacji instalacji od biura."
-                )
-                szczegoly_oferty = ""
-                if potrzebna_oferta:
-                    szczegoly_oferty = st.text_area(
-                        "Szczegóły do oferty handlowej (co klient musi dołożyć / co wycenić):*",
-                        value=ticket.get('Szczegóły oferty', ''),
-                        placeholder="np. Klient musi dołożyć zawór zwrotny z filtrem na powrocie, potrzebna wycena zbiornika buforowego 200L, klient chce domontować 4 dodatkowe panele...",
-                        help="Koordynator w biurze otrzyma natychmiast powiadomienie o pilnej ofercie."
-                    )
-
-                st.markdown("---")
-                # ROZLICZENIE FINANSOWE
-                st.markdown("##### 2. Rozliczenie finansowe i status końcowy")
-                f_col1, f_col2 = st.columns(2)
-                with f_col1:
-                    kwota_label = "4. Kwota pobrana od klienta (zł):" if is_success else "4. Ewentualna kwota pobrana od klienta (np. dojazd/diagnostyka, wpisz 0 jeśli brak):"
-                    kwota_pobrana = st.text_input(
-                        kwota_label,
-                        value=ticket.get('Kwota przyjęta', '') or ticket.get('Kwota', '') or ("0" if not is_success else "")
-                    )
-                    przyjazdy = st.selectbox("Ilość przyjazdów:", ["1", "2", "3", "Więcej"], index=0)
-                with f_col2:
-                    forma_plat = st.selectbox(
-                        "Forma płatności:",
-                        ["Gotówka", "Przelew", "Gwarancja (0 zł)", "Czeka na przelew"],
-                        index=0
-                    )
-                    status_opcje = ["zakończone", "do ponownego przyjazdu (brak części)", "w toku (wymaga części)", "anulowane"]
-                    status_nowy = st.selectbox(
-                        "Status zlecenia:",
-                        status_opcje,
-                        index=status_domyslny_idx
-                    )
-
-                c_save, c_back = st.columns(2)
-                with c_save:
-                    zapisz = st.form_submit_button("💾 ZAPISZ RAPORT I STATUS", type="primary")
-                with c_back:
-                    anuluj = st.form_submit_button("Wróć bez zmian")
-
-                if zapisz:
-                    # Walidacja obowiązkowych pól
-                    if not zalecenia_klient.strip():
-                        st.error("❌ Pole 'Zalecenia dla klienta' jest obowiązkowe! Wpisz zalecenia przed zapisaniem raportu.")
-                    elif not potwierdzenie_tabliczek:
-                        st.error("❌ Pamiętaj o tabliczkach znamionowych! Zaznacz potwierdzenie wykonania zdjęć tabliczek przed zapisaniem raportu.")
-                    elif is_success and not opis_prac.strip():
-                        st.error("❌ Pole 'Opis tego, co zostało zrobione' jest obowiązkowe!")
-                    elif not is_success and not przyczyna_nieuk.strip():
-                        st.error("❌ Pole 'Dokładny opis przyczyny' jest obowiązkowe!")
-                    elif not is_success and not brakujace_mat.strip():
-                        st.error("❌ Pole 'Lista brakujących części i materiałów' jest obowiązkowe!")
-                    elif potrzebna_oferta and not szczegoly_oferty.strip():
-                        st.error("❌ Skoro zaznaczono 'Wymagana oferta handlowa', musisz opisać co klient musi dołożyć!")
-                    else:
-                        idx = curr_rows.index[0]
-                        if is_success:
-                            df.at[idx, 'Komentarz serwisanta'] = opis_prac
-                            df.at[idx, 'Zalecenia dla klienta'] = zalecenia_klient.strip()
-                            df.at[idx, 'Zużyte materiały'] = zuzyte_czesci.strip()
-                            df.at[idx, 'Przyczyna nieukończenia'] = ""
-                            df.at[idx, 'Brakujące materiały'] = ""
-                        else:
-                            df.at[idx, 'Komentarz serwisanta'] = przyczyna_nieuk
-                            df.at[idx, 'Przyczyna nieukończenia'] = przyczyna_nieuk.strip()
-                            df.at[idx, 'Brakujące materiały'] = brakujace_mat.strip()
-                            df.at[idx, 'Zalecenia dla klienta'] = zalecenia_klient.strip()
-                            df.at[idx, 'Zużyte materiały'] = ""
-
-                        # Oznaczenie tabliczek na poziomie klienta
-                        if potwierdzenie_tabliczek or klient_ma_juz_tabliczki:
-                            mask_client_all = (df['Klient_ID'] == klient_id_curr)
-                            df.loc[mask_client_all, 'Tabliczki_OK'] = 'True'
-                            df.at[idx, 'Tabliczki_OK'] = 'True'
-
-                        # Zapis załączonych zdjęć / filmików serwisanta na dysk serwera
-                        if tech_media:
-                            target_dir = os.path.join(ATTACHMENTS_DIR, str(ticket['nr.']))
-                            os.makedirs(target_dir, exist_ok=True)
-                            for file in tech_media:
-                                f_dest = os.path.join(target_dir, file.name)
-                                with open(f_dest, "wb") as f_out:
-                                    f_out.write(file.getbuffer())
-
-                        # Zapis statusu oferty
-                        if potrzebna_oferta:
-                            df.at[idx, 'Wymaga oferty'] = True
-                            df.at[idx, 'Etap oferty'] = '🚨 PILNE: Zgłoszenie z serwisu (wymaga wyceny modyfikacji)'
-                            df.at[idx, 'Szczegóły oferty'] = szczegoly_oferty.strip()
-                            df.at[idx, 'Data oferty'] = datetime.date.today().strftime("%Y-%m-%d")
-                        else:
-                            if not bool(ticket.get('Wymaga oferty', False)):
-                                df.at[idx, 'Wymaga oferty'] = False
-
-                        df.at[idx, 'Ilość przyjazdów'] = przyjazdy
-                        df.at[idx, 'Kwota przyjęta'] = kwota_pobrana
-                        df.at[idx, 'Płatność '] = forma_plat
-                        df.at[idx, 'STATUS ZGŁOSZENIA'] = status_nowy
-                        df.at[idx, 'DATA SERWISU'] = datetime.date.today().strftime("%Y-%m-%d")
-                        df.at[idx, 'SERWISANT'] = domyslny_tech
-
-                        st.session_state.df = df
-                        save_ticket_persistently(df.loc[idx].to_dict(), current_full_df=st.session_state.df)
-
-                        st.session_state.active_ticket_nr = None
-                        st.success("✅ Raport oraz zdjęcia zostały pomyślnie zapisane w bazie i arkuszu Excel!")
-                        st.rerun()
-
-                if anuluj:
-                    st.session_state.active_ticket_nr = None
-                    st.rerun()
 
     def render_ticket_card(row, is_open=True):
         nr = row.get('nr.', '')
@@ -1252,12 +1225,11 @@ elif st.session_state.user_role == "serwisant":
             btn_col1, btn_col2 = st.columns(2)
             
             with btn_col1:
-                # PRZYCISK ROZPOCZĘCIA ZGŁOSZENIA
                 if curr_status.lower() in ['w trakcie realizacji', 'rozpoczęte']:
                     st.button("⚙️ W TRAKCIE PRAC", key=f"btn_started_{nr}", disabled=True, use_container_width=True)
                 else:
                     if st.button("▶️ Rozpocznij zlecenie", key=f"btn_start_{nr}", type="secondary", use_container_width=True):
-                        match_idx = df[df['nr.'] == str(nr)].index
+                        match_idx = df[df['nr.'].astype(str) == str(nr)].index
                         if not match_idx.empty:
                             df.at[match_idx[0], 'STATUS ZGŁOSZENIA'] = 'w trakcie realizacji'
                             df.at[match_idx[0], 'SERWISANT'] = domyslny_tech
@@ -1267,9 +1239,8 @@ elif st.session_state.user_role == "serwisant":
                             st.rerun()
 
             with btn_col2:
-                # PRZYCISK ROZLICZENIA / ZAKOŃCZENIA
                 if st.button("✅ Rozlicz / Zakończ", key=f"btn_close_{nr}", type="primary", use_container_width=True):
-                    st.session_state.active_ticket_nr = nr
+                    st.session_state.active_ticket_nr = str(nr)
                     st.rerun()
 
         st.write("")
