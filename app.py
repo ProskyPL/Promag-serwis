@@ -329,7 +329,10 @@ if st.session_state.user_role == "koordynator":
     st.title("🖥️ Pulpit Koordynatora")
 
     # Monitor pilnych ofert handlowych zgłoszonych z terenu przez serwisantów
-    pilne_oferty_df = df[df['Wymaga oferty'] & df['Etap oferty'].astype(str).str.contains('PILNE', case=False, na=False)]
+    is_wymaga_oferty = df['Wymaga oferty'].astype(str).str.lower().isin(['true', '1', 'tak'])
+is_pilne_etap = df['Etap oferty'].astype(str).str.contains('PILNE', case=False, na=False)
+pilne_oferty_df = df[is_wymaga_oferty & is_pilne_etap]
+False)]
     if not pilne_oferty_df.empty:
         st.warning(f"🚨 **UWAGA: Masz {len(pilne_oferty_df)} zgłoszeń z terenu wymagających PILNEJ oferty handlowej (modyfikacja/dorobienie instalacji)!** Sprawdź zakładkę *Lejek Ofert Handlowych* poniżej.")
 
@@ -340,8 +343,7 @@ if st.session_state.user_role == "koordynator":
         st.subheader("📑 Zgłoszenia wymagające oferty handlowej")
         st.caption("Poniżej znajdują się zapytania ofertowe oraz zgłoszenia z terenu, gdzie serwisant stwierdził konieczność płatnej modyfikacji/dorobienia instalacji.")
 
-        oferty_df = df[df['Wymaga oferty'] == True]
-
+        oferty_df = df[df['Wymaga oferty'].astype(str).str.lower().
         if oferty_df.empty:
             st.info("Brak zgłoszeń w trakcie ofertowania.")
         else:
@@ -542,8 +544,8 @@ if st.session_state.user_role == "koordynator":
                             "Przyczyna nieukończenia": "",
                             "Brakujące materiały": "",
                             "Szczegóły oferty": "",
-                            "Tabliczki_OK": "False",
-                            "Wymaga oferty": "False",
+                            "Tabliczki_OK": False,
+                            "Wymaga oferty": False,
                             "Email handlowca": "",
                             "Etap oferty": "",
                             "Data oferty": "",
