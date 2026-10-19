@@ -153,7 +153,7 @@ def load_all_data():
     if 'Wymaga oferty' not in df.columns:
         df['Wymaga oferty'] = False
     else:
-        df['Wymaga oferty'] = df['Wymaga oferty'].astype(str).str.lower().isin(['true', '1'])
+        df['Wymaga oferty'] = df['Wymaga oferty'].astype(str).str.lower().isin(['true', '1', 'tak'])
 
     df['Klient_ID'] = df.apply(get_clean_client_id, axis=1)
     return df
@@ -328,11 +328,11 @@ if st.session_state.user_role == "koordynator":
 
     st.title("🖥️ Pulpit Koordynatora")
 
-    # Monitor pilnych ofert handlowych zgłoszonych z terenu przez serwisantów
+    # Monitor pilnych ofert handlowych zgłoszonych z terenu przez serwisantów (w pełni bezpieczne sprawdzenie logiczne)
     is_wymaga_oferty = df['Wymaga oferty'].astype(str).str.lower().isin(['true', '1', 'tak'])
-is_pilne_etap = df['Etap oferty'].astype(str).str.contains('PILNE', case=False, na=False)
-pilne_oferty_df = df[is_wymaga_oferty & is_pilne_etap]
-False)]
+    is_pilne_etap = df['Etap oferty'].astype(str).str.contains('PILNE', case=False, na=False)
+    pilne_oferty_df = df[is_wymaga_oferty & is_pilne_etap]
+
     if not pilne_oferty_df.empty:
         st.warning(f"🚨 **UWAGA: Masz {len(pilne_oferty_df)} zgłoszeń z terenu wymagających PILNEJ oferty handlowej (modyfikacja/dorobienie instalacji)!** Sprawdź zakładkę *Lejek Ofert Handlowych* poniżej.")
 
@@ -343,7 +343,8 @@ False)]
         st.subheader("📑 Zgłoszenia wymagające oferty handlowej")
         st.caption("Poniżej znajdują się zapytania ofertowe oraz zgłoszenia z terenu, gdzie serwisant stwierdził konieczność płatnej modyfikacji/dorobienia instalacji.")
 
-        oferty_df = df[df['Wymaga oferty'].astype(str).str.lower().
+        oferty_df = df[df['Wymaga oferty'].astype(str).str.lower().isin(['true', '1', 'tak'])]
+
         if oferty_df.empty:
             st.info("Brak zgłoszeń w trakcie ofertowania.")
         else:
@@ -485,7 +486,7 @@ False)]
             if st.button("➕ DODAJ NOWEGO KLIENTA", type="primary", use_container_width=True):
                 st.session_state.show_new_client_modal = True
 
-        # MODAL / FORMULARZ DODAWANIA NOWEGO KLIENTA
+        # MODAL / FORMULARZ DODAWANIA NOWEGO KLIENTA (Z POPRAWIONYMI WARTOŚCIAMI BOOL)
         if st.session_state.show_new_client_modal:
             st.info("👤 Wprowadź dane nowego klienta do bazy:")
             with st.form("form_dodaj_klienta"):
@@ -849,8 +850,8 @@ False)]
                                 "Przyczyna nieukończenia": "",
                                 "Brakujące materiały": "",
                                 "Szczegóły oferty": "",
-                                "Tabliczki_OK": first_record.get('Tabliczki_OK', 'False'),
-                                "Wymaga oferty": str(wymaga_oferty),
+                                "Tabliczki_OK": first_record.get('Tabliczki_OK', False),
+                                "Wymaga oferty": bool(wymaga_oferty),
                                 "Email handlowca": email_handlowca,
                                 "Etap oferty": etap_startowy,
                                 "Data oferty": now_str[:10],
