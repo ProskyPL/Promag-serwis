@@ -32,6 +32,14 @@ st.markdown("""
         margin-bottom: 12px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.04);
     }
+    .mobile-card-route {
+        background-color: #f0fff4;
+        border: 2px solid #48bb78;
+        border-radius: 12px;
+        padding: 14px;
+        margin-bottom: 12px;
+        box-shadow: 0 3px 6px rgba(0,0,0,0.08);
+    }
     .badge {
         display: inline-block;
         padding: 4px 10px;
@@ -41,6 +49,7 @@ st.markdown("""
         text-transform: uppercase;
         margin-right: 5px;
     }
+    .badge-route { background-color: #2f855a; color: #ffffff; }
     .badge-solar { background-color: #feebc8; color: #c05621; }
     .badge-foto { background-color: #fefcbf; color: #975a16; }
     .badge-pompa { background-color: #bee3f8; color: #2b6cb0; }
@@ -77,6 +86,59 @@ PIN_CONFIG = {
     "9999": {"rejon_kod": "ALL", "nazwa_rejonu": "Dostęp ogólny / Wszystkie", "domyslny_serwisant": "Koordynator"}
 }
 
+# Słowniki szybkiego wyboru ("Gotowce") dla serwisantów
+QUICK_ACTIONS = {
+    "solar": [
+        "Odpowietrzono układ solarny", "Uzupełniono i sprawdzono stężenie glikolu",
+        "Wymieniono pompę obiegową", "Wymieniono naczynie przeponowe",
+        "Skonfigurowano sterownik solarny", "Uszczelniono połączenia śrubunkowe"
+    ],
+    "pompa": [
+        "Wyczyszczono filtr siatkowy / magnetyczny", "Skorygowano krzywą grzewczą",
+        "Skasowano błąd i zresetowano sterownik", "Sprawdzono ciśnienie układu CO",
+        "Odpowietrzono układ pompy ciepła", "Wymieniono czujnik temperatury"
+    ],
+    "foto": [
+        "Zresetowano i zaktualizowano falownik", "Sprawdzono napięcia stringów DC",
+        "Dokręcono złącza w rozdzielnicy AC/DC", "Ponownie skonfigurowano Wi-Fi / monitoring",
+        "Wymieniono konektory MC4", "Przetestowano zabezpieczenia nadprądowe"
+    ],
+    "magazyn": [
+        "Zaktualizowano oprogramowanie BMS", "Wykonano kalibrację SOC baterii",
+        "Sprawdzono komunikację CAN/RS485 z falownikiem", "Zresetowano moduł bateryjny",
+        "Zweryfikowano poprawność ładowania/rozładowania"
+    ]
+}
+
+QUICK_PARTS = {
+    "solar": [
+        "Glikol solarny 5L", "Glikol solarny 10L", "Pompa obiegowa Wilo 25/6",
+        "Naczynie przeponowe 18L", "Naczynie przeponowe 24L", "Odpowietrznik automatyczny",
+        "Zawór zwrotny 3/4 cala", "Czujnik temperatury PT1000"
+    ],
+    "pompa": [
+        "Zawór trójdrogowy 1 cal", "Czujnik przepływu", "Filtr magnetyczny 1 cal",
+        "Odpowietrznik automatyczny", "Czujnik temperatury NTC", "Grupa bezpieczeństwa CO"
+    ],
+    "foto": [
+        "Komplet złączy MC4", "Ogranicznik przepięć AC/DC", "Wyłącznik nadprądowy B16/C16",
+        "Moduł komunikacyjny Wi-Fi / Logger", "Przewód solarny 6mm2 (5m)"
+    ],
+    "magazyn": [
+        "Przewód komunikacyjny CAN/RS485", "Bezpiecznik DC 125A", "Moduł BMS",
+        "Zestaw przewodów mocy DC"
+    ]
+}
+
+QUICK_RECOMMENDATIONS = [
+    "Kontrola ciśnienia na manometrze za 48h",
+    "Nie wyłączać zasilania głównego sterownika",
+    "Obserwować pracę instalacji przez najbliższe 7 dni",
+    "Zgłosić do biura w razie ponownego pojawienia się błędu",
+    "Zalecany przegląd okresowy przed kolejnym sezonem",
+    "Instalacja sprawna, poinstruowano klienta o obsłudze"
+]
+
 def get_clean_client_id(row):
     tel = str(row.get('Numer telefonu', '')).strip()
     tel_digits = "".join([c for c in tel if c.isdigit()])
@@ -94,6 +156,16 @@ def get_region_name_from_code(kod_pocztowy):
             if r['kod'] == cyfra:
                 return r['nazwa']
     return "Rejon 0 (Warszawa / Mazowieckie)"
+
+def build_google_maps_multi_route(tickets_df):
+    addresses = []
+    for _, r in tickets_df.iterrows():
+        addr = f"{r.get('Adres', '')}, {r.get('Kod pocztowy', '')} {r.get('Miejscowość', '')}".strip(', ')
+        if addr and addr != "":
+            addresses.append(urllib.parse.quote(addr))
+    if not addresses:
+        return ""
+    return "https://www.google.com/maps/dir/" + "/".join(addresses)
 
 def wyswietl_multimedia(ticket_nr):
     ticket_folder = os.path.join(ATTACHMENTS_DIR, str(ticket_nr))
@@ -144,7 +216,8 @@ def load_all_data():
     for opt_col in ['Zużyte materiały', 'Czynności dodatkowe', 'Ilość przyjazdów', 'Kwota przyjęta', 
                     'Komentarz serwisanta', 'Email handlowca', 'Etap oferty', 'Data oferty', 
                     'Komentarz koordynatora', 'Zalecenia dla klienta', 'Przyczyna nieukończenia', 
-                    'Brakujące materiały', 'Szczegóły oferty', 'Tabliczki_OK']:
+                    'Brakujące materiały', 'Szczegóły oferty', 'Tabliczki_OK',
+                    'Kolejnosc_trasy', 'Data_trasy', 'Trasa_aktywna', 'Odbior_klienta']:
         if opt_col not in df.columns:
             df[opt_col] = ''
         else:
@@ -244,6 +317,12 @@ if 'show_edit_client_modal' not in st.session_state:
 if 'active_ticket_nr' not in st.session_state:
     st.session_state.active_ticket_nr = None
 
+if 'day_started' not in st.session_state:
+    st.session_state.day_started = False
+
+if 'last_closed_summary' not in st.session_state:
+    st.session_state.last_closed_summary = None
+
 # --- EKRAN STARTOWY: WYBÓR ROLI ---
 if not st.session_state.user_role:
     st.markdown("<h2 style='text-align: center; margin-top: 2rem;'>⚡ System Zgłoszeń Serwisowych</h2>", unsafe_allow_html=True)
@@ -253,14 +332,14 @@ if not st.session_state.user_role:
     col_r1, col_r2 = st.columns(2)
     with col_r1:
         st.info("### 🖥️ Panel Koordynatora")
-        st.write("Wyszukiwarka klientów, pełna historia zgłoszeń ze statusami, prywatne notatki, edycja danych, zdjęcia/wideo, lejek ofertowy.")
+        st.write("Wyszukiwarka klientów, pełna historia zgłoszeń, planowanie tras dla serwisantów na kolejny dzień, lejek ofertowy.")
         if st.button("Wejdź jako Koordynator", use_container_width=True, type="primary"):
             st.session_state.user_role = "koordynator"
             st.rerun()
 
     with col_r2:
         st.success("### 📱 Panel Serwisanta")
-        st.write("Zlecenia od 08.10.2026 w Twoim rejonie, rozpoczęcie pracy, zamknięcie z procedurą weryfikacji, pełna historia i wyszukiwarka klientów.")
+        st.write("Przycisk 'Rozpocznij dzień' z gotową trasą, szybkie gotowce raportów, historia na karcie i baza kodów błędów.")
         if st.button("Wejdź jako Serwisant (PIN)", use_container_width=True):
             st.session_state.user_role = "serwisant"
             st.rerun()
@@ -329,15 +408,136 @@ if st.session_state.user_role == "koordynator":
 
     st.title("🖥️ Pulpit Koordynatora")
 
-    # Monitor pilnych ofert handlowych zgłoszonych z terenu przez serwisantów (w pełni bezpieczne sprawdzenie logiczne)
+    # Monitor pilnych ofert handlowych zgłoszonych z terenu przez serwisantów
     is_wymaga_oferty = df['Wymaga oferty'].astype(str).str.lower().isin(['true', '1', 'tak'])
     is_pilne_etap = df['Etap oferty'].astype(str).str.contains('PILNE', case=False, na=False)
     pilne_oferty_df = df[is_wymaga_oferty & is_pilne_etap]
 
     if not pilne_oferty_df.empty:
-        st.warning(f"🚨 **UWAGA: Masz {len(pilne_oferty_df)} zgłoszeń z terenu wymagających PILNEJ oferty handlowej (modyfikacja/dorobienie instalacji)!** Sprawdź zakładkę *Lejek Ofert Handlowych* poniżej.")
+        st.warning(f"🚨 **UWAGA: Masz {len(pilne_oferty_df)} zgłoszeń z terenu wymagających PILNEJ oferty handlowej (modyfikacja/dorobienie instalacji)!** Sprawdź zakładkę *Lejek Ofert Handlowych*.")
 
-    tab_k1, tab_k2 = st.tabs(["🔍 Baza Klientów & Zgłoszenia", "📑 Lejek Ofert Handlowych"])
+    tab_k1, tab_k2, tab_k3 = st.tabs([
+        "🔍 Baza Klientów & Zgłoszenia", 
+        "📑 Lejek Ofert Handlowych",
+        "🗺️ Planowanie Tras (Na kolejny dzień)"
+    ])
+
+    # --- ZAKŁADKA 3: PLANOWANIE TRAS DLA SERWISANTÓW ---
+    with tab_k3:
+        st.subheader("🗺️ Zaplanuj i zatwierdź trasę dla serwisanta")
+        st.caption("Wybierz rejon, ułóż kolejność wizyt na jutro (lub dziś) i zatwierdź. Serwisant po kliknięciu 'Rozpocznij dzień' otrzyma dokładnie tę trasę.")
+
+        col_tr1, col_tr2 = st.columns(2)
+        with col_tr1:
+            plan_reg_options = [r['kod'] for r in REGION_DEFINITIONS]
+            plan_reg_names = {r['kod']: r['nazwa'] for r in REGION_DEFINITIONS}
+            default_plan_reg = selected_region_code if selected_region_code != "ALL" else "0"
+            wybrany_rejon_trasy = st.selectbox(
+                "1. Wybierz rejon do zaplanowania trasy:",
+                options=plan_reg_options,
+                index=plan_reg_options.index(default_plan_reg) if default_plan_reg in plan_reg_options else 0,
+                format_func=lambda x: plan_reg_names.get(x, x)
+            )
+        with col_tr2:
+            jutro_default = datetime.date.today() + datetime.timedelta(days=1)
+            data_planowanej_trasy = st.date_input("2. Data realizacji trasy:", value=jutro_default)
+
+        # Pobranie otwartych zleceń z wybranego rejonu (od CUTOFF_DATE)
+        mask_plan_reg = (
+            df['Rejon Polski'].str.contains(f"Rejon {wybrany_rejon_trasy}", case=False, na=False) |
+            df['Kod pocztowy'].str.startswith(wybrany_rejon_trasy)
+        )
+        mask_open_plan = ~df['STATUS ZGŁOSZENIA'].str.lower().str.contains('zakończ|anulow|nowy klient', na=False)
+        mask_cutoff_plan = df['DATA ZGŁOSZENIA'].str[:10] >= CUTOFF_DATE
+        mask_ready_offer = (
+            (df['Etap oferty'] != 'Czeka na ofertę handlowca') &
+            (df['Etap oferty'] != 'Oczekiwanie na akceptację klienta')
+        )
+
+        kandydaci_df = df[mask_plan_reg & mask_open_plan & mask_cutoff_plan & mask_ready_offer].copy()
+
+        if kandydaci_df.empty:
+            st.info("Brak otwartych zleceń w tym rejonie do zaplanowania trasy.")
+        else:
+            st.markdown("##### 3. Wybierz zlecenia do trasy i ustaw ich kolejność (1, 2, 3...):")
+            st.caption("Zaznacz zlecenia w tabeli lub wpisz numer kolejności (1 = pierwszy klient, 2 = drugi klient itd.).")
+
+            # Przygotowanie danych pod edytor trasy
+            route_editor_rows = []
+            for idx_r, r_k in kandydaci_df.iterrows():
+                curr_order = str(r_k.get('Kolejnosc_trasy', '')).strip()
+                is_in_route = str(r_k.get('Trasa_aktywna', '')).lower() in ['true', '1', 'tak']
+                order_num = int(curr_order) if curr_order.isdigit() else 99
+                route_editor_rows.append({
+                    "Włącz do trasy": is_in_route,
+                    "Kolejność (1,2,3...)": order_num if is_in_route and order_num < 99 else 1,
+                    "Nr": str(r_k.get('nr.', '')),
+                    "Miejscowość": r_k.get('Miejscowość', ''),
+                    "Adres": r_k.get('Adres', ''),
+                    "Kod": r_k.get('Kod pocztowy', ''),
+                    "Klient": f"{r_k.get('Imię', '')} {r_k.get('Nazwisko', '')}",
+                    "Instalacja": str(r_k.get('INSTALACJA', '')).upper(),
+                    "Opis usterki": r_k.get('OPIS OD KLIENTA', '') or r_k.get('OPIS', '')
+                })
+
+            route_edit_df = pd.DataFrame(route_editor_rows)
+            edited_route = st.data_editor(
+                route_edit_df,
+                use_container_width=True,
+                hide_index=True,
+                disabled=["Nr", "Miejscowość", "Adres", "Kod", "Klient", "Instalacja", "Opis usterki"],
+                key=f"route_editor_{wybrany_rejon_trasy}"
+            )
+
+            selected_for_route = edited_route[edited_route["Włącz do trasy"] == True].sort_values(by="Kolejność (1,2,3...)")
+
+            if not selected_for_route.empty:
+                st.markdown("##### 📍 Podgląd ułożonej trasy:")
+                preview_steps = []
+                for step_i, (_, s_row) in enumerate(selected_for_route.iterrows(), 1):
+                    preview_steps.append(f"**{step_i}.** #{s_row['Nr']} — **{s_row['Miejscowość']}**, {s_row['Adres']} ({s_row['Klient']} | *{s_row['Instalacja']}*)")
+                st.markdown(" ➔ ".join([f"**[{i}] {r['Miejscowość']}**" for i, (_, r) in enumerate(selected_for_route.iterrows(), 1)]))
+                for p_line in preview_steps:
+                    st.write(p_line)
+
+                # Wygenerowanie linku Google Maps dla koordynatora do sprawdzenia
+                selected_nrs = selected_for_route['Nr'].astype(str).tolist()
+                ordered_df_for_map = pd.concat([df[df['nr.'].astype(str) == n] for n in selected_nrs], ignore_index=True)
+                gmaps_url = build_google_maps_multi_route(ordered_df_for_map)
+
+                col_act1, col_act2, col_act3 = st.columns([2, 2, 1])
+                with col_act1:
+                    if st.button("✅ ZATWIERDŹ I OPUBLIKUJ TRASĘ DLA SERWISANTA", type="primary", use_container_width=True):
+                        # Najpierw wyczyść starą trasę w tym rejonie
+                        df.loc[mask_plan_reg, 'Trasa_aktywna'] = 'False'
+                        df.loc[mask_plan_reg, 'Kolejnosc_trasy'] = ''
+
+                        # Zapisz nową kolejność
+                        for final_pos, (_, s_row) in enumerate(selected_for_route.iterrows(), 1):
+                            nr_val = str(s_row['Nr'])
+                            m_idx = df['nr.'].astype(str) == nr_val
+                            df.loc[m_idx, 'Trasa_aktywna'] = 'True'
+                            df.loc[m_idx, 'Kolejnosc_trasy'] = str(final_pos)
+                            df.loc[m_idx, 'Data_trasy'] = str(data_planowanej_trasy)
+
+                        st.session_state.df = df
+                        updated_region_rows = df[mask_plan_reg]
+                        save_multiple_tickets_persistently(updated_region_rows, current_full_df=st.session_state.df)
+                        st.success(f"🚀 Trasa na dzień {data_planowanej_trasy} ({len(selected_for_route)} punktów) została zatwierdzona i wysłana do panelu serwisanta!")
+                        st.rerun()
+
+                with col_act2:
+                    if gmaps_url:
+                        st.markdown(f'<a href="{gmaps_url}" target="_blank" style="text-decoration:none;"><button style="width:100%; height:40px; border-radius:8px; background:#38a169; color:white; border:none; font-weight:bold; cursor:pointer;">🗺️ Sprawdź pętlę w Google Maps</button></a>', unsafe_allow_html=True)
+
+                with col_act3:
+                    if st.button("🗑️ Wyczyść trasę", use_container_width=True):
+                        df.loc[mask_plan_reg, 'Trasa_aktywna'] = 'False'
+                        df.loc[mask_plan_reg, 'Kolejnosc_trasy'] = ''
+                        st.session_state.df = df
+                        save_multiple_tickets_persistently(df[mask_plan_reg], current_full_df=st.session_state.df)
+                        st.info("Wyczyszczono zaplanowaną trasę dla tego rejonu.")
+                        st.rerun()
 
     # --- ZAKŁADKA 2: LEJEK OFERTOWY ---
     with tab_k2:
@@ -431,6 +631,7 @@ if st.session_state.user_role == "koordynator":
                     for _, p_row in active_in_curr_region.iterrows():
                         t_rows.append({
                             "Nr": p_row.get('nr.', ''),
+                            "Trasa": f"#{p_row.get('Kolejnosc_trasy')}" if str(p_row.get('Trasa_aktywna')).lower() == 'true' else "—",
                             "Data zgłoszenia": str(p_row.get('DATA ZGŁOSZENIA', ''))[:16],
                             "Klient": f"{p_row.get('Imię', '')} {p_row.get('Nazwisko', '')}",
                             "Telefon": p_row.get('Numer telefonu', ''),
@@ -479,7 +680,6 @@ if st.session_state.user_role == "koordynator":
 
         st.markdown("---")
         
-        # NAGŁÓWEK WYSZUKIWANIA I PRZYCISK NOWEGO KLIENTA
         c_title, c_add_btn = st.columns([3, 1])
         with c_title:
             st.subheader("1. Baza Klientów (Wyszukaj lub Dodaj)")
@@ -487,7 +687,6 @@ if st.session_state.user_role == "koordynator":
             if st.button("➕ DODAJ NOWEGO KLIENTA", type="primary", use_container_width=True):
                 st.session_state.show_new_client_modal = True
 
-        # MODAL / FORMULARZ DODAWANIA NOWEGO KLIENTA
         if st.session_state.show_new_client_modal:
             st.info("👤 Wprowadź dane nowego klienta do bazy:")
             with st.form("form_dodaj_klienta"):
@@ -551,6 +750,10 @@ if st.session_state.user_role == "koordynator":
                             "Email handlowca": "",
                             "Etap oferty": "",
                             "Data oferty": "",
+                            "Kolejnosc_trasy": "",
+                            "Data_trasy": "",
+                            "Trasa_aktywna": "False",
+                            "Odbior_klienta": "",
                             "Klient_ID": get_clean_client_id({'Numer telefonu': nc_tel, 'Imię': nc_imie, 'Nazwisko': nc_nazwisko})
                         }
                         
@@ -595,7 +798,6 @@ if st.session_state.user_role == "koordynator":
         if len(clients_unique) > 0:
             st.markdown("##### Wybierz klienta, aby otworzyć jego kartę:")
             client_choices = []
-            id_to_label = {}
             for idx, r in clients_unique.iterrows():
                 name = f"{r.get('Imię', '')} {r.get('Nazwisko', '')}".strip() or "Brak nazwiska"
                 tel = r.get('Numer telefonu', '')
@@ -604,7 +806,6 @@ if st.session_state.user_role == "koordynator":
                 cid = r['Klient_ID']
                 lbl = f"{name} | 📞 {tel} | 📍 {miasto}, {ulica}"
                 client_choices.append({'ID': cid, 'Etykieta': lbl})
-                id_to_label[cid] = lbl
 
             current_choice_idx = 0
             if st.session_state.selected_client_id:
@@ -658,7 +859,6 @@ if st.session_state.user_role == "koordynator":
                         st.session_state.show_edit_client_modal = not st.session_state.show_edit_client_modal
                         st.session_state.show_new_ticket_modal = False
 
-                # FORMULARZ EDYCJI DANYCH KLIENTA
                 if st.session_state.show_edit_client_modal:
                     st.info("✏️ Edycja danych tego klienta (zmiany zaktualizują bazę i arkusz Excel):")
                     with st.form("form_edytuj_klienta"):
@@ -714,7 +914,6 @@ if st.session_state.user_role == "koordynator":
                             st.session_state.show_edit_client_modal = False
                             st.rerun()
 
-                # PEŁNA LISTA ZGŁOSZEŃ I STATUSÓW KLIENTA
                 st.markdown("### 📋 Historia i status zgłoszeń tego klienta:")
                 
                 summary_data = []
@@ -745,14 +944,12 @@ if st.session_state.user_role == "koordynator":
                 summary_df = pd.DataFrame(summary_data)
                 st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
-                # FORMULARZ NOWEGO ZGŁOSZENIA Z PRYWATNĄ NOTATKĄ KOORDYNATORA
                 if st.session_state.show_new_ticket_modal:
                     st.info("📝 Rejestracja nowego zgłoszenia:")
                     
                     next_id = get_next_ticket_id()
                     new_ticket_nr_preview = f"N{next_id}"
 
-                    # 1. Zmiana daty
                     custom_date_enabled = st.checkbox("📅 Zmień datę i czas zgłoszenia (domyślnie: teraz)")
                     now_default = datetime.datetime.now()
                     if custom_date_enabled:
@@ -765,7 +962,6 @@ if st.session_state.user_role == "koordynator":
                     else:
                         now_str = now_default.strftime("%Y-%m-%d %H:%M")
 
-                    # 2. Załączanie zdjęć i filmików
                     st.markdown("📷 **Załącz zdjęcia lub filmiki:**")
                     uploaded_media = st.file_uploader(
                         "Przeciągnij zdjęcia lub filmiki (JPG, PNG, MP4, MOV...):",
@@ -788,7 +984,6 @@ if st.session_state.user_role == "koordynator":
 
                         opis_zgloszenia = st.text_area("Opis usterki / zapytania od klienta (widoczne dla serwisanta):", placeholder="Wpisz treść problemu...")
 
-                        # PRYWATNA NOTATKA KOORDYNATORA (NIEWIDOCZNA DLA SERWISANTA)
                         st.markdown("🔒 **Wewnętrzny komentarz koordynatora (POUFNE — niewidoczne dla serwisanta):**")
                         komentarz_koordynatora = st.text_area(
                             "Notatka biura / koordynatora:",
@@ -856,6 +1051,10 @@ if st.session_state.user_role == "koordynator":
                                 "Email handlowca": email_handlowca,
                                 "Etap oferty": etap_startowy,
                                 "Data oferty": now_str[:10],
+                                "Kolejnosc_trasy": "",
+                                "Data_trasy": "",
+                                "Trasa_aktywna": "False",
+                                "Odbior_klienta": "",
                                 "Klient_ID": first_record['Klient_ID']
                             }
 
@@ -870,7 +1069,6 @@ if st.session_state.user_role == "koordynator":
                             st.session_state.show_new_ticket_modal = False
                             st.rerun()
 
-                # SZCZEGÓŁOWE ARCHIWUM Z PODGLĄDEM ZDJĘĆ/WIDEO I POUFNEJ NOTATKI
                 st.markdown("#### 🔍 Szczegóły poszczególnych zleceń:")
                 for i, (_, row) in enumerate(client_records.iterrows(), 1):
                     nr_t = str(row.get('nr.', 'Brak nr'))
@@ -954,6 +1152,26 @@ elif st.session_state.user_role == "serwisant":
         if st.button("Wyloguj"):
             st.session_state.tech_pin = None
             st.session_state.active_ticket_nr = None
+            st.session_state.day_started = False
+            st.rerun()
+
+    # Powiadomienie po zamknięciu zlecenia z szybkim SMS-em podsumowującym dla klienta
+    if st.session_state.last_closed_summary:
+        summ = st.session_state.last_closed_summary
+        st.success(f"✅ Zlecenie #{summ['nr']} zostało pomyślnie zapisane!")
+        if summ.get('tel'):
+            sms_podsumowanie = urllib.parse.quote(
+                f"PROMAG SERWIS: Potwierdzamy wykonanie serwisu (Zlecenie #{summ['nr']}). "
+                f"Zalecenia: {summ['zalecenia']}. Kwota: {summ['kwota']} zl."
+            )
+            st.markdown(
+                f'<a href="sms:{summ["tel"]}?body={sms_podsumowanie}" target="_blank" style="text-decoration:none;">'
+                f'<button style="width:100%; height:44px; border-radius:10px; background:#2b6cb0; color:white; border:none; font-weight:bold; margin-bottom:10px; cursor:pointer;">'
+                f'📲 Wyślij SMS z potwierdzeniem i zaleceniami do klienta</button></a>',
+                unsafe_allow_html=True
+            )
+        if st.button("Zamknij powiadomienie", use_container_width=True):
+            st.session_state.last_closed_summary = None
             st.rerun()
 
     # -------------------------------------------------------------------------
@@ -970,14 +1188,19 @@ elif st.session_state.user_role == "serwisant":
             st.stop()
 
         ticket = curr_rows.iloc[0]
+        typ_inst = str(ticket.get('INSTALACJA', 'solar')).lower().strip()
+        if typ_inst not in QUICK_ACTIONS:
+            typ_inst = "solar"
         
         if st.button("⬅️ Wróć do listy zleceń bez zapisywania"):
             st.session_state.active_ticket_nr = None
             st.rerun()
 
         st.markdown(f"### 🛠️ Rozliczenie / Zamknięcie zlecenia #{ticket['nr.']}")
-        st.caption(f"Klient: **{ticket['Imię']} {ticket['Nazwisko']}** | 📍 {ticket['Miejscowość']}, {ticket['Adres']}")
+        st.caption(f"Klient: **{ticket['Imię']} {ticket['Nazwisko']}** | 📍 {ticket['Miejscowość']}, {ticket['Adres']} | Instalacja: **{typ_inst.upper()}**")
 
+        # 1. KROK DYNAMICZNY: CZY PORADZIŁ SOBIE?
+        st.markdown("##### 1. Wynik prac serwisowych")
         poradzil_sobie = st.radio(
             "Czy poradziłeś sobie z tym zleceniem?*",
             ["TAK — Usterka została usunięta", "NIE — Zlecenie nieukończone / Wymaga powrotu"],
@@ -986,28 +1209,81 @@ elif st.session_state.user_role == "serwisant":
 
         is_success = "TAK" in poradzil_sobie
 
+        # 2. SZYBKIE KAFELKI ("GOTOWCE" JEDNYM KLIKNIĘCIEM - POZA FORMULARZEM, ABY ODŚWIEŻAŁY POLA)
+        st.markdown("---")
+        st.markdown("##### ⚡ Szybkie podpowiedzi (kliknij kafelki, aby nie pisać ręcznie)")
+        if is_success:
+            wybrane_czynnosci = st.multiselect(
+                "Szybki wybór wykonanych czynności:",
+                options=QUICK_ACTIONS.get(typ_inst, QUICK_ACTIONS["solar"]),
+                key=f"quick_act_{ticket['nr.']}"
+            )
+            wybrane_czesci = st.multiselect(
+                "Szybki wybór zużytych części:",
+                options=QUICK_PARTS.get(typ_inst, QUICK_PARTS["solar"]),
+                key=f"quick_parts_{ticket['nr.']}"
+            )
+        else:
+            wybrane_czynnosci = []
+            wybrane_czesci = st.multiselect(
+                "Szybki wybór brakujących części do zamówienia:",
+                options=QUICK_PARTS.get(typ_inst, QUICK_PARTS["solar"]),
+                key=f"quick_missing_{ticket['nr.']}"
+            )
+
+        wybrane_zalecenia = st.multiselect(
+            "Szybki wybór zaleceń dla klienta:",
+            options=QUICK_RECOMMENDATIONS,
+            key=f"quick_rec_{ticket['nr.']}"
+        )
+
+        # 3. KROK DYNAMICZNY: CZY WYMAGANA OFERTA?
+        st.markdown("---")
+        st.markdown("##### 💼 Zapotrzebowanie na ofertę handlową (dla biura)")
+        potrzebna_oferta = st.checkbox(
+            "⚠️ WYMAGANA OFERTA HANDLOWA DLA KLIENTA (dorobienie, modyfikacja, rozbudowa instalacji)",
+            value=bool(str(ticket.get('Wymaga oferty', '')).lower() in ['true', '1', 'tak']),
+            key=f"chk_oferta_{ticket['nr.']}"
+        )
+        
+        szczegoly_oferty = ""
+        if potrzebna_oferta:
+            szczegoly_oferty = st.text_area(
+                "Co klient musi dołożyć / co biuro musi wycenić:*",
+                value=str(ticket.get('Szczegóły oferty', '')),
+                placeholder="np. Klient potrzebuje wyceny bufora 200L, przeróbki rur lub domontowania 4 paneli...",
+                key=f"txt_szczegoly_oferty_{ticket['nr.']}"
+            )
+
+        # SPRAWDZENIE CZY TABLICZKI TEGO KLIENTA SĄ JUŻ W BAZIE
         klient_id_curr = ticket.get('Klient_ID', '')
         klient_ma_juz_tabliczki = (
             (df['Klient_ID'] == klient_id_curr) & 
             (df['Tabliczki_OK'].astype(str).str.lower().isin(['true', '1', 'tak']))
         ).any()
 
+        # Domyślne wartości sklejone z szybkich kafelków
+        auto_opis = ", ".join(wybrane_czynnosci) if wybrane_czynnosci else (ticket.get('Komentarz serwisanta', '') or ticket.get('OPIS', ''))
+        auto_czesci = ", ".join(wybrane_czesci) if wybrane_czesci else (ticket.get('Zużyte materiały', '') if is_success else ticket.get('Brakujące materiały', ''))
+        auto_zalecenia = ". ".join(wybrane_zalecenia) if wybrane_zalecenia else ticket.get('Zalecenia dla klienta', '')
+
+        # FORMULARZ GŁÓWNY ZAMKNIĘCIA
         with st.form(f"form_rozliczenie_{ticket['nr.']}"):
             if is_success:
                 st.success("✅ **Zlecenie zakończone sukcesem:**")
                 opis_prac = st.text_area(
-                    "1. Opis tego, co zostało zrobione / wykonane czynności:*",
-                    value=ticket.get('Komentarz serwisanta', '') or ticket.get('OPIS', ''),
+                    "Opis tego, co zostało zrobione / wykonane czynności:*",
+                    value=auto_opis,
                     placeholder="np. Odpowietrzono układ, wymieniono pompę obiegową..."
                 )
                 zuzyte_czesci = st.text_area(
-                    "2. Lista wykorzystanych części i materiałów:",
-                    value=ticket.get('Zużyte materiały', ''),
-                    placeholder="np. Pompa Wilo, zawór zwrotny..."
+                    "Lista wykorzystanych części i materiałów:",
+                    value=auto_czesci,
+                    placeholder="np. Pompka Wilo, zawór zwrotny..."
                 )
                 zalecenia_klient = st.text_area(
-                    "3. Zalecenia dla klienta (OBOWIĄZKOWE):*",
-                    value=ticket.get('Zalecenia dla klienta', ''),
+                    "Zalecenia dla klienta (OBOWIĄZKOWE):*",
+                    value=auto_zalecenia,
                     placeholder="np. Kontrola ciśnienia na manometrze za 48h..."
                 )
                 przyczyna_nieuk = ""
@@ -1016,19 +1292,19 @@ elif st.session_state.user_role == "serwisant":
             else:
                 st.error("⚠️ **Zlecenie nie zostało ukończone:**")
                 przyczyna_nieuk = st.text_area(
-                    "1. Dokładny opis przyczyny:*",
+                    "Dokładny opis przyczyny:*",
                     value=ticket.get('Przyczyna nieukończenia', '') or ticket.get('Komentarz serwisanta', ''),
-                    placeholder="np. Uszkodzona elektronika inwertera..."
+                    placeholder="np. Uszkodzona elektronika inwertera nienaprawialna na miejscu..."
                 )
                 brakujace_mat = st.text_area(
-                    "2. Lista brakujących części do zamówienia:*",
-                    value=ticket.get('Brakujące materiały', ''),
-                    placeholder="np. Nowa płyta główna inwertera..."
+                    "Lista brakujących części do zamówienia:*",
+                    value=auto_czesci,
+                    placeholder="np. Nowa płyta główna inwertera Deye 10kW..."
                 )
                 zalecenia_klient = st.text_area(
-                    "3. Zalecenia dla klienta (OBOWIĄZKOWE):*",
-                    value=ticket.get('Zalecenia dla klienta', ''),
-                    placeholder="np. Wyłączono bezpiecznik główny..."
+                    "Zalecenia dla klienta (OBOWIĄZKOWE):*",
+                    value=auto_zalecenia,
+                    placeholder="np. Wyłączono bezpiecznik główny ze względów bezpieczeństwa..."
                 )
                 opis_prac = ""
                 zuzyte_czesci = ""
@@ -1038,39 +1314,30 @@ elif st.session_state.user_role == "serwisant":
             st.markdown("##### 📸 Zdjęcia z obiektu & Tabliczki znamionowe")
 
             if klient_ma_juz_tabliczki:
-                st.success("✅ Tabliczki znamionowe tego klienta są już w bazie.")
+                st.success("✅ Tabliczki znamionowe tego klienta są już w bazie (zweryfikowane).")
                 potwierdzenie_tabliczek = True
             else:
                 st.warning("📌 Brak tabliczek znamionowych w bazie tego klienta. Wykonaj ich zdjęcia!")
                 potwierdzenie_tabliczek = st.checkbox(
-                    "✅ POTWIERDZAM: Wykonałem i załączam zdjęcia tabliczek znamionowych."
+                    "✅ POTWIERDZAM: Wykonałem i załączam zdjęcia tabliczek znamionowych wszystkich komponentów.",
+                    value=False
                 )
 
             tech_media = st.file_uploader(
-                "Załącz zdjęcia:",
+                "Załącz zdjęcia z galerii telefonu:",
                 type=['png', 'jpg', 'jpeg', 'webp', 'mp4'],
                 accept_multiple_files=True,
                 key=f"tech_upload_{ticket['nr.']}"
             )
 
-            st.markdown("---")
-            potrzebna_oferta = st.checkbox(
-                "⚠️ WYMAGANA OFERTA HANDLOWA DLA KLIENTA (dorobienie / modyfikacja)",
-                value=bool(ticket.get('Wymaga oferty', False))
-            )
-            szczegoly_oferty = ""
-            if potrzebna_oferta:
-                szczegoly_oferty = st.text_area(
-                    "Co klient musi dołożyć / co wycenić:*",
-                    value=ticket.get('Szczegóły oferty', ''),
-                    placeholder="np. Wycena dodatkowego bufora 200L..."
-                )
+            camera_photo = st.camera_input("Lub zrób zdjęcie aparatem teraz:", key=f"camera_{ticket['nr.']}")
 
             st.markdown("---")
+            st.markdown("##### 2. Rozliczenie finansowe, odbiór klienta i status")
             f_col1, f_col2 = st.columns(2)
             with f_col1:
                 kwota_pobrana = st.text_input(
-                    "Kwota pobrana (zł):",
+                    "Kwota pobrana od klienta (zł):",
                     value=ticket.get('Kwota przyjęta', '') or ticket.get('Kwota', '') or ("0" if not is_success else "")
                 )
                 przyjazdy = st.selectbox("Ilość przyjazdów:", ["1", "2", "3", "Więcej"], index=0)
@@ -1083,19 +1350,26 @@ elif st.session_state.user_role == "serwisant":
                 status_opcje = ["zakończone", "do ponownego przyjazdu (brak części)", "w toku (wymaga części)", "anulowane"]
                 status_nowy = st.selectbox("Status zlecenia:", status_opcje, index=status_domyslny_idx)
 
+            odbior_klienta = st.checkbox(
+                "✍️ Klient obecny na miejscu — potwierdził odbiór prac oraz zapoznał się z zaleceniami",
+                value=True
+            )
+
             zapisz = st.form_submit_button("💾 ZAPISZ RAPORT I ZAMKNIJ", type="primary", use_container_width=True)
 
             if zapisz:
                 if not zalecenia_klient.strip():
                     st.error("❌ Pole 'Zalecenia dla klienta' jest obowiązkowe!")
                 elif not potwierdzenie_tabliczek:
-                    st.error("❌ Musisz potwierdzić sprawdzenie tabliczek znamionowych!")
+                    st.error("❌ Pamiętaj o tabliczkach znamionowych! Zaznacz potwierdzenie wykonania zdjęć tabliczek przed zapisaniem raportu.")
                 elif is_success and not opis_prac.strip():
-                    st.error("❌ Opis wykonanych czynności jest wymagany!")
-                elif not is_success and (not przyczyna_nieuk.strip() or not brakujace_mat.strip()):
-                    st.error("❌ Przyczyna oraz lista braków są wymagane!")
+                    st.error("❌ Pole 'Opis tego, co zostało zrobione' jest obowiązkowe!")
+                elif not is_success and not przyczyna_nieuk.strip():
+                    st.error("❌ Pole 'Dokładny opis przyczyny' jest obowiązkowe!")
+                elif not is_success and not brakujace_mat.strip():
+                    st.error("❌ Pole 'Lista brakujących części i materiałów' jest obowiązkowe!")
                 elif potrzebna_oferta and not szczegoly_oferty.strip():
-                    st.error("❌ Wpisz szczegóły potrzebnej oferty!")
+                    st.error("❌ Skoro zaznaczono 'Wymagana oferta handlowa', musisz opisać co klient musi dołożyć!")
                 else:
                     idx = curr_rows.index[0]
                     if is_success:
@@ -1112,22 +1386,29 @@ elif st.session_state.user_role == "serwisant":
                         df.at[idx, 'Zużyte materiały'] = ""
 
                     if potwierdzenie_tabliczek or klient_ma_juz_tabliczki:
-                        mask_c = (df['Klient_ID'] == klient_id_curr)
-                        df.loc[mask_c, 'Tabliczki_OK'] = 'True'
+                        mask_client_all = (df['Klient_ID'] == klient_id_curr)
+                        df.loc[mask_client_all, 'Tabliczki_OK'] = 'True'
                         df.at[idx, 'Tabliczki_OK'] = 'True'
 
+                    target_dir = os.path.join(ATTACHMENTS_DIR, str(ticket['nr.']))
+                    os.makedirs(target_dir, exist_ok=True)
                     if tech_media:
-                        target_dir = os.path.join(ATTACHMENTS_DIR, str(ticket['nr.']))
-                        os.makedirs(target_dir, exist_ok=True)
                         for file in tech_media:
                             with open(os.path.join(target_dir, file.name), "wb") as f_out:
                                 f_out.write(file.getbuffer())
+
+                    if camera_photo:
+                        c_name = f"foto_aparat_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+                        with open(os.path.join(target_dir, c_name), "wb") as f_c:
+                            f_c.write(camera_photo.getbuffer())
 
                     if potrzebna_oferta:
                         df.at[idx, 'Wymaga oferty'] = True
                         df.at[idx, 'Etap oferty'] = '🚨 PILNE: Zgłoszenie z serwisu (wymaga wyceny modyfikacji)'
                         df.at[idx, 'Szczegóły oferty'] = szczegoly_oferty.strip()
                         df.at[idx, 'Data oferty'] = datetime.date.today().strftime("%Y-%m-%d")
+                    else:
+                        df.at[idx, 'Wymaga oferty'] = False
 
                     df.at[idx, 'Ilość przyjazdów'] = przyjazdy
                     df.at[idx, 'Kwota przyjęta'] = kwota_pobrana
@@ -1135,15 +1416,23 @@ elif st.session_state.user_role == "serwisant":
                     df.at[idx, 'STATUS ZGŁOSZENIA'] = status_nowy
                     df.at[idx, 'DATA SERWISU'] = datetime.date.today().strftime("%Y-%m-%d")
                     df.at[idx, 'SERWISANT'] = domyslny_tech
+                    df.at[idx, 'Odbior_klienta'] = "Potwierdzony" if odbior_klienta else "Brak"
 
                     st.session_state.df = df
                     save_ticket_persistently(df.loc[idx].to_dict(), current_full_df=st.session_state.df)
 
+                    tel_raw = str(ticket.get('Numer telefonu', '')).strip()
+                    tel_digits_only = "".join([c for c in tel_raw.split(',')[0].split('/')[0] if c.isdigit()])
+                    st.session_state.last_closed_summary = {
+                        "nr": ticket['nr.'],
+                        "tel": tel_digits_only,
+                        "zalecenia": zalecenia_klient.strip(),
+                        "kwota": kwota_pobrana or "0"
+                    }
+
                     st.session_state.active_ticket_nr = None
-                    st.success("✅ Raport został zapisany!")
                     st.rerun()
 
-        # Izolacja formularza – zapobiega renderowaniu listy w tle
         st.stop()
 
     # Filtrowanie rejonu
@@ -1167,15 +1456,22 @@ elif st.session_state.user_role == "serwisant":
     tech_recent_mask = tech_df['DATA ZGŁOSZENIA'].str[:10] >= CUTOFF_DATE
     tech_operational_df = tech_df[tech_recent_mask]
 
-    is_done = tech_operational_df['STATUS ZGŁOSZENIA'].str.lower().str.contains('zakończ|anulow', na=False)
-    otwarte_df = tech_operational_df[~is_done]
-    zakonczone_df = tech_operational_df[is_done]
+    is_done = tech_operational_df['STATUS ZGŁOSZENIA'].str.lower().str.contains('zakończ|anulow|nowy klient', na=False)
+    otwarte_df = tech_operational_df[~is_done].copy()
+    zakonczone_df = tech_operational_df[is_done].copy()
 
-    # TRZY ZAKŁADKI: 1. Do zrobienia, 2. Zakończone, 3. Wyszukiwarka klienta i całej historii
-    tab1, tab2, tab3 = st.tabs([
+    # Sprawdzenie czy koordynator zatwierdził trasę dla tego rejonu
+    planned_route_df = otwarte_df[otwarte_df['Trasa_aktywna'].astype(str).str.lower().isin(['true', '1', 'tak'])].copy()
+    if not planned_route_df.empty:
+        planned_route_df['sort_order'] = pd.to_numeric(planned_route_df['Kolejnosc_trasy'], errors='coerce').fillna(99)
+        planned_route_df = planned_route_df.sort_values(by='sort_order')
+
+    # CZTERY ZAKŁADKI SERWISANTA
+    tab1, tab2, tab3, tab4 = st.tabs([
         f"⏳ Do zrobienia ({len(otwarte_df)})", 
         f"✅ Zakończone ({len(zakonczone_df)})",
-        "🔍 Szukaj klienta (Cała historia)"
+        "🔍 Szukaj klienta",
+        "📘 Baza Wiedzy / Błędy"
     ])
 
     def render_ticket_card(row, is_open=True):
@@ -1188,13 +1484,19 @@ elif st.session_state.user_role == "serwisant":
         map_query = urllib.parse.quote(f"{row.get('Adres', '')}, {row.get('Miejscowość', '')}")
         curr_status = str(row.get('STATUS ZGŁOSZENIA', 'w toku')).strip()
 
+        is_route_item = str(row.get('Trasa_aktywna', '')).lower() in ['true', '1', 'tak']
+        route_pos = str(row.get('Kolejnosc_trasy', '')).strip()
+
         badge_type = "badge-solar" if "solar" in typ else ("badge-foto" if "foto" in typ else ("badge-pompa" if "pompa" in typ else "badge-magazyn"))
+        card_class = "mobile-card-route" if (is_route_item and is_open) else "mobile-card"
+        route_badge_html = f'<span class="badge badge-route">🎯 PUNKT TRASY #{route_pos}</span>' if (is_route_item and is_open and route_pos) else ""
 
         st.markdown(f"""
-        <div class="mobile-card">
+        <div class="{card_class}">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
                 <span style="font-weight:bold; font-size:1.1rem; color:#1a202c;">#{nr}</span>
                 <div>
+                    {route_badge_html}
                     <span class="badge {badge_type}">{typ.upper() or 'SERWIS'}</span>
                     <span class="badge" style="background:#e2e8f0; color:#2d3748;">{curr_status.upper()}</span>
                 </div>
@@ -1211,12 +1513,30 @@ elif st.session_state.user_role == "serwisant":
         </div>
         """, unsafe_allow_html=True)
 
+        # ULEPSZENIE: HISTORIA OBIEKTU W PIGUŁCE BEZPOŚREDNIO NA KARCIE ZLECENIA
+        cid = row.get('Klient_ID', '')
+        prev_visits = df[(df['Klient_ID'] == cid) & (df['nr.'].astype(str) != str(nr))]
+        if not prev_visits.empty:
+            with st.expander(f"📂 Poprzednie wizyty u tego klienta ({len(prev_visits)}) — sprawdź przed wejściem"):
+                for _, pv in prev_visits.iterrows():
+                    st.markdown(
+                        f"• **#{pv.get('nr.')}** ({str(pv.get('DATA ZGŁOSZENIA', ''))[:10]}) | "
+                        f"Status: **{pv.get('STATUS ZGŁOSZENIA', '')}** | Serwisant: *{pv.get('SERWISANT', 'Brak')}*\n"
+                        f"  Usterka: {pv.get('OPIS OD KLIENTA', '') or pv.get('OPIS', '')} | "
+                        f"Raport: {pv.get('Komentarz serwisanta', 'Brak')} | Części: {pv.get('Zużyte materiały', 'Brak')}"
+                    )
+
         wyswietl_multimedia(nr)
 
-        col_a, col_b = st.columns(2)
+        # PRZYCISKI KOMUNIKACJI: TELEFON, SMS I MAPY
+        col_a, col_sms, col_b = st.columns(3)
         with col_a:
             if tel_clean:
                 st.markdown(f'<a href="tel:{tel_clean}" target="_blank" style="text-decoration:none;"><button style="width:100%; height:45px; border-radius:10px; background:#2b6cb0; color:white; border:none; font-weight:bold; cursor:pointer;">📞 Zadzwoń</button></a>', unsafe_allow_html=True)
+        with col_sms:
+            if tel_clean:
+                sms_msg = urllib.parse.quote("Dzień dobry, z tej strony serwis PROMAG. Będę u Pana/Pani za około 20-30 minut.")
+                st.markdown(f'<a href="sms:{tel_clean}?body={sms_msg}" target="_blank" style="text-decoration:none;"><button style="width:100%; height:45px; border-radius:10px; background:#805ad5; color:white; border:none; font-weight:bold; cursor:pointer;">💬 SMS</button></a>', unsafe_allow_html=True)
         with col_b:
             if row.get('Miejscowość', ''):
                 st.markdown(f'<a href="https://www.google.com/maps/search/?api=1&query={map_query}" target="_blank" style="text-decoration:none;"><button style="width:100%; height:45px; border-radius:10px; background:#38a169; color:white; border:none; font-weight:bold; cursor:pointer;">🗺️ Nawiguj</button></a>', unsafe_allow_html=True)
@@ -1246,19 +1566,61 @@ elif st.session_state.user_role == "serwisant":
         st.write("")
 
     with tab1:
+        # MODUŁ: ROZPOCZNIJ DZIEŃ (ZAPLANOWANA TRASA OD KOORDYNATORA)
+        if not planned_route_df.empty:
+            route_date_str = planned_route_df.iloc[0].get('Data_trasy', 'Dziś')
+            if not st.session_state.day_started:
+                st.info(f"📅 **Koordynator przygotował dla Ciebie trasę na dzień: {route_date_str}** ({len(planned_route_df)} punktów).")
+                if st.button("🚀 ROZPOCZNIJ DZIEŃ (Pokaż moją trasę od koordynatora)", type="primary", use_container_width=True):
+                    st.session_state.day_started = True
+                    st.rerun()
+            else:
+                st.success(f"🚗 **TRASA AKTYWNA ({route_date_str})** — Jedziesz według kolejności zatwierdzonej przez koordynatora:")
+                route_map_url = build_google_maps_multi_route(planned_route_df)
+                col_rm1, col_rm2 = st.columns([3, 1])
+                with col_rm1:
+                    if route_map_url:
+                        st.markdown(
+                            f'<a href="{route_map_url}" target="_blank" style="text-decoration:none;">'
+                            f'<button style="width:100%; height:48px; border-radius:10px; background:#2f855a; color:white; border:none; font-weight:bold; font-size:1rem; cursor:pointer;">'
+                            f'🗺️ OTWÓRZ CAŁĄ TRASĘ W GOOGLE MAPS ({len(planned_route_df)} pkt)</button></a>',
+                            unsafe_allow_html=True
+                        )
+                with col_rm2:
+                    if st.button("Pokaż wszystkie", use_container_width=True):
+                        st.session_state.day_started = False
+                        st.rerun()
+                st.markdown("---")
+
         if otwarte_df.empty:
             st.info("🎉 Brak otwartych zleceń od 08.10 w Twoim rejonie!")
         else:
-            q = st.text_input("🔍 Filtruj zlecenia (miejscowość / nazwisko):", key="search_open").strip().lower()
-            view_df = otwarte_df
-            if q:
-                view_df = view_df[
-                    view_df['Nazwisko'].str.lower().str.contains(q, na=False) |
-                    view_df['Miejscowość'].str.lower().str.contains(q, na=False) |
-                    view_df['Adres'].str.lower().str.contains(q, na=False)
-                ]
-            for _, row in view_df.head(30).iterrows():
-                render_ticket_card(row, is_open=True)
+            # Jeśli dzień rozpoczęty -> na górze pokazujemy trasę wg kolejności, a pod spodem resztę
+            if st.session_state.day_started and not planned_route_df.empty:
+                for _, row in planned_route_df.iterrows():
+                    render_ticket_card(row, is_open=True)
+                
+                pozostale_df = otwarte_df[~otwarte_df['nr.'].astype(str).isin(planned_route_df['nr.'].astype(str))]
+                if not pozostale_df.empty:
+                    with st.expander(f"📋 Pozostałe zlecenia w rejonie poza dzisiejszą trasą ({len(pozostale_df)})"):
+                        for _, row in pozostale_df.iterrows():
+                            render_ticket_card(row, is_open=True)
+            else:
+                q = st.text_input("🔍 Filtruj zlecenia (miejscowość / nazwisko):", key="search_open").strip().lower()
+                view_df = otwarte_df
+                if q:
+                    view_df = view_df[
+                        view_df['Nazwisko'].str.lower().str.contains(q, na=False) |
+                        view_df['Miejscowość'].str.lower().str.contains(q, na=False) |
+                        view_df['Adres'].str.lower().str.contains(q, na=False)
+                    ]
+                # Sortuj tak, aby ewentualne punkty trasy były wyżej
+                view_df['is_r'] = view_df['Trasa_aktywna'].astype(str).str.lower().isin(['true', '1', 'tak'])
+                view_df['r_ord'] = pd.to_numeric(view_df['Kolejnosc_trasy'], errors='coerce').fillna(999)
+                view_df = view_df.sort_values(by=['is_r', 'r_ord'], ascending=[False, True])
+
+                for _, row in view_df.head(30).iterrows():
+                    render_ticket_card(row, is_open=True)
 
     with tab2:
         if zakonczone_df.empty:
@@ -1267,7 +1629,7 @@ elif st.session_state.user_role == "serwisant":
             for _, row in zakonczone_df.head(20).iterrows():
                 render_ticket_card(row, is_open=False)
 
-    # ZAKŁADKA 3: WYSZUKIWARKA KLIENTA DLA SERWISANTA (PEŁNA HISTORIA Z ARCHIWUM)
+    # ZAKŁADKA 3: WYSZUKIWARKA KLIENTA DLA SERWISANTA
     with tab3:
         st.subheader("🔍 Sprawdź historię klienta (np. pomoc telefoniczna)")
         st.caption("Wyszukaj dowolnego klienta w całej bazie (również zlecenia archiwalne sprzed 08.10.2026 r.).")
@@ -1307,3 +1669,45 @@ elif st.session_state.user_role == "serwisant":
                             <b>Serwisant:</b> {h_row.get('SERWISANT', 'Nieprzypisany')} | <b>Zużyte części:</b> {h_row.get('Zużyte materiały', 'Brak')}
                         </div>
                         """, unsafe_allow_html=True)
+
+    # ZAKŁADKA 4: BAZA WIEDZY I KODY BŁĘDÓW DLA SERWISANTA
+    with tab4:
+        st.subheader("📘 Szybka Baza Wiedzy Technicznej & Kody Błędów")
+        st.caption("Ściągawka terenowa dla instalacji solarnych, pomp ciepła, fotowoltaiki i magazynów energii.")
+
+        with st.expander("☀️ INSTALACJE SOLARNE (Hewalex / Geco) — Diagnostyka i ciśnienia", expanded=True):
+            st.markdown("""
+            * **Ciśnienie spoczynkowe (zimny układ):** powinno wynosić **1.5 – 2.0 bar** (na manometrze grupy pompowej).
+            * **Ciśnienie wstępne w naczyniu przeponowym:** ustawić o **0.2 – 0.3 bar niżej** niż ciśnienie robocze układu (sprawdzać przy odłączonym naczyniu).
+            * **Brak odbioru ciepła (wysoka temp. kolektora T1 > 110°C, zimny zbiornik T2):**
+              1. Zapowietrzona grupa pompowa lub kolektor (odpowietrzyć na separatorze powietrza).
+              2. Zablokowany wirnik pompy obiegowej lub uszkodzony kondensator.
+              3. Zacięty zawór zwrotny pod grupą pompową.
+            * **Błąd czujnika PT1000 (przerwa / zwarcie):** rezystancja w temp. 20°C powinna wynosić ok. **1078 Ω** (w 0°C = 1000 Ω).
+            """)
+
+        with st.expander("❄️ POMPY CIEPŁA — Najczęstsze kody błędów"):
+            st.markdown("""
+            * **Błąd E03 / E04 (Brak przepływu wody / błąd czujnika przepływu):**
+              1. Wyczyścić filtr siatkowy i separator magnetyczny na powrocie z instalacji.
+              2. Sprawdzić odpowietrzenie układu i pracę pompy obiegowej.
+            * **Błąd Wysokiego Ciśnienia (HP / E01):**
+              1. Zbyt mały odbiór ciepła (zamknięte pętle podłogówki / głowice termostatyczne).
+              2. Zapowietrzony wymiennik płytowy.
+            * **Błąd Niskiego Ciśnienia (LP / E02):**
+              1. Zabrudzony parownik jednostki zewnętrznej lub zablokowany wentylator.
+              2. Ubytek czynnika chłodniczego (sprawdzić szczelność układu).
+            """)
+
+        with st.expander("⚡ FOTOWOLTAIKA & MAGAZYNY ENERGII (Deye / Sofar / Fronius)"):
+            st.markdown("""
+            * **Deye — Błąd F18 (Hardware AC Overcurrent):**
+              1. Sprawdzić poprawność podłączenia faz i brak zwarcia na wyjściu AC/Backup.
+              2. Zrestartować inwerter (wyłączyć AC -> DC -> Baterię, odczekać 5 min, włączyć w odwrotnej kolejności).
+            * **Deye / Sofar — Błąd F56 / ID05 (Niskie napięcie szyny DC / Baterii):**
+              1. Bateria rozładowana poniżej progu odcięcia BMS – wymusić doładowanie z sieci (Grid Charge).
+              2. Sprawdzić przewód komunikacyjny CAN (piny 4 i 5) między magazynem a falownikiem.
+            * **Wskazówka — Wyłączanie napięcia powyżej 253V (Sieć energetyczna):**
+              1. Zmierz napięcie na fazach pod obciążeniem.
+              2. Sprawdź aktywację funkcji *Q(U) / P(U)* w ustawieniach normy krajowej (NC RfG).
+            """)
