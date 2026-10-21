@@ -5,6 +5,14 @@ import os
 import shutil
 import urllib.parse
 
+# Próba załadowania bibliotek Google Drive / Sheets
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
+    GSPREAD_AVAILABLE = True
+except ImportError:
+    GSPREAD_AVAILABLE = False
+
 st.set_page_config(
     page_title="PROMAG SERWIS - System Obsługi",
     page_icon="⚡",
@@ -12,17 +20,13 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Katalogi na dane i załączniki
-ATTACHMENTS_DIR = "zalaczniki"
-NOWE_FILE = "nowe_zgloszenia.csv"
-EXCEL_FILE = "Serwisowa posortowana.xlsx"
-os.makedirs(ATTACHMENTS_DIR, exist_ok=True)
-
-# SZTYWNA DATA STARTU NOWEGO SYSTEMU (ODCIĘCIE HISTORII)
-CUTOFF_DATE = "2026-10-08"
-
-# Style responsywne pod komputery i smartfony
+# Wsparcie dla instalacji PWA (pełny ekran na telefonie bez pasków przeglądarki)
 st.markdown("""
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#2b6cb0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="PROMAG">
 <style>
     .mobile-card {
         background-color: #f8f9fa;
@@ -57,6 +61,16 @@ st.markdown("""
     .badge-status-started { background-color: #c6f6d5; color: #22543d; }
 </style>
 """, unsafe_allow_html=True)
+
+# Katalogi i nazwy plików
+ATTACHMENTS_DIR = "zalaczniki"
+NOWE_FILE = "nowe_zgloszenia.csv"
+EXCEL_FILE = "Serwisowa posortowana.xlsx"
+GSHEET_NAME = "PROMAG_BAZA_SERWISOWA"
+os.makedirs(ATTACHMENTS_DIR, exist_ok=True)
+
+# SZTYWNA DATA STARTU NOWEGO SYSTEMU (ODCIĘCIE HISTORII)
+CUTOFF_DATE = "2026-10-08"
 
 # Konfiguracja okręgów pocztowych (0-9)
 REGION_DEFINITIONS = [
@@ -139,6 +153,49 @@ QUICK_RECOMMENDATIONS = [
     "Instalacja sprawna, poinstruowano klienta o obsłudze"
 ]
 
+# =========================================================================
+# FUNKCJE POŁĄCZENIA Z GOOGLE DRIVE / GOOGLE SHEETS
+# =========================================================================
+def get_gsheet_worksheet():
+    """Zwraca obiekt arkusza Google Sheets, jeśli skonfigurowano st.secrets."""
+    if not GSPREAD_AVAILABLE:
+        return None
+    try:
+        if "gcp_service_account" not in st.secrets:
+            return None
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        creds = Credentials.from_service_account_info(
+            st.secrets["gcp_service_account"], scopes=scopes
+        )
+        client = gspread.authorize(creds)
+        sh = client.open(GSHEET_NAME)
+        try:
+            return sh.worksheet("Wszystkie posortowane")
+        except Exception:
+            return sh.get_worksheet(0)
+    except Exception as e:
+        print(f"Błąd połączenia z Google Sheets: {e}")
+        return None
+
+def sync_to_gsheet(df_to_save):
+    """Zapisuje całą tabelę bezpośrednio do Arkusza Google na Dysku Google."""
+    ws = get_gsheet_worksheet()
+    if ws is None or df_to_save.empty:
+        return False
+    try:
+        clean_df = df_to_save.drop(columns=['Klient_ID'], errors='ignore').fillna('')
+        clean_df = clean_df.astype(str)
+        data_to_upload = [clean_df.columns.values.tolist()] + clean_df.values.tolist()
+        ws.clear()
+        ws.update(data_to_upload)
+        return True
+    except Exception as e:
+        print(f"Błąd zapisu do Google Sheets: {e}")
+        return False
+
 def get_clean_client_id(row):
     tel = str(row.get('Numer telefonu', '')).strip()
     tel_digits = "".join([c for c in tel if c.isdigit()])
@@ -184,24 +241,45 @@ def wyswietl_multimedia(ticket_nr):
                         st.video(file_path)
                         st.caption(f"🎥 {filename}")
 
-# Ładowanie danych z obsługą trwałego pliku CSV i Excela
+# Ładowanie danych: Najpierw próbuje z Google Drive (Sheets), potem z lokalnego Excela/CSV
 def load_all_data():
-    base_df = pd.DataFrame()
-    if os.path.exists(EXCEL_FILE):
-        try:
-            base_df = pd.read_excel(EXCEL_FILE, sheet_name="Wszystkie posortowane")
-        except Exception:
-            base_df = pd.read_excel(EXCEL_FILE, sheet_name=0)
+    df = pd.DataFrame()
+    ws = get_gsheet_worksheet()
+    loaded_from_cloud = False
 
-    if os.path.exists(NOWE_FILE):
+    if ws is not None:
         try:
-            nowe_df = pd.read_csv(NOWE_FILE, dtype=str)
-            df = pd.concat([nowe_df, base_df], ignore_index=True)
-            df = df.drop_duplicates(subset=['nr.'], keep='first')
-        except Exception:
+            records = ws.get_all_records()
+            if records:
+                df = pd.DataFrame(records)
+                loaded_from_cloud = True
+                st.session_state.cloud_active = True
+        except Exception as e:
+            print(f"Błąd odczytu z Google Sheets, przełączam na plik lokalny: {e}")
+
+    if not loaded_from_cloud:
+        st.session_state.cloud_active = False
+        base_df = pd.DataFrame()
+        if os.path.exists(EXCEL_FILE):
+            try:
+                base_df = pd.read_excel(EXCEL_FILE, sheet_name="Wszystkie posortowane")
+            except Exception:
+                base_df = pd.read_excel(EXCEL_FILE, sheet_name=0)
+
+        if os.path.exists(NOWE_FILE):
+            try:
+                nowe_df = pd.read_csv(NOWE_FILE, dtype=str)
+                df = pd.concat([nowe_df, base_df], ignore_index=True)
+                df = df.drop_duplicates(subset=['nr.'], keep='first')
+            except Exception:
+                df = base_df
+        else:
             df = base_df
-    else:
-        df = base_df
+
+        # Jeśli Google Sheet jest podpięty, ale był zupełnie pusty -> wyślij do niego dane startowe z Excela
+        if ws is not None and not df.empty:
+            if sync_to_gsheet(df):
+                st.session_state.cloud_active = True
 
     cols_to_str = ['nr.', 'INSTALACJA', 'PRZYJMUJĄCY', 'Imię', 'Nazwisko', 'Numer telefonu', 
                    'Kod pocztowy', 'Miejscowość', 'Adres', 'Rejon Polski', 'STATUS ZGŁOSZENIA', 
@@ -231,10 +309,15 @@ def load_all_data():
     df['Klient_ID'] = df.apply(get_clean_client_id, axis=1)
     return df
 
-# Bezpieczny zapis całego DataFrame do pliku Excel z kopią zapasową
+# Bezpieczny zapis całego DataFrame do pliku Excel + synchronizacja z Google Drive
 def sync_excel_file(df_to_save):
     if df_to_save.empty:
         return
+    # 1. Zapis do Google Sheets (jeśli aktywne)
+    if sync_to_gsheet(df_to_save):
+        st.session_state.cloud_active = True
+
+    # 2. Zapis lokalny jako kopia bezpieczeństwa
     try:
         if os.path.exists(EXCEL_FILE):
             shutil.copyfile(EXCEL_FILE, f"{EXCEL_FILE}.bak")
@@ -243,9 +326,9 @@ def sync_excel_file(df_to_save):
         with pd.ExcelWriter(EXCEL_FILE, engine='openpyxl') as writer:
             clean_save_df.to_excel(writer, sheet_name="Wszystkie posortowane", index=False)
     except Exception as e:
-        print(f"Błąd zapisu Excel: {e}")
+        print(f"Błąd zapisu lokalnego Excel: {e}")
 
-# Podwójny trwały zapis pojedynczego zgłoszenia (CSV + Excel)
+# Potrójny trwały zapis pojedynczego zgłoszenia (Google Drive + CSV + Excel)
 def save_ticket_persistently(ticket_dict, current_full_df=None):
     df_single = pd.DataFrame([ticket_dict])
     if os.path.exists(NOWE_FILE):
@@ -263,7 +346,7 @@ def save_ticket_persistently(ticket_dict, current_full_df=None):
     if current_full_df is not None:
         sync_excel_file(current_full_df)
 
-# Podwójny trwały zapis wielu rekordów (CSV + Excel)
+# Potrójny trwały zapis wielu rekordów (Google Drive + CSV + Excel)
 def save_multiple_tickets_persistently(updated_df_rows, current_full_df=None):
     if updated_df_rows.empty:
         return
@@ -281,6 +364,9 @@ def save_multiple_tickets_persistently(updated_df_rows, current_full_df=None):
 
     if current_full_df is not None:
         sync_excel_file(current_full_df)
+
+if 'cloud_active' not in st.session_state:
+    st.session_state.cloud_active = False
 
 if 'df' not in st.session_state:
     st.session_state.df = load_all_data()
@@ -352,6 +438,15 @@ if st.session_state.user_role == "koordynator":
     df = st.session_state.df
 
     st.sidebar.title("⚡ Koordynator")
+    if st.session_state.cloud_active:
+        st.sidebar.success("☁️ Baza Google Drive: AKTYWNA")
+    else:
+        st.sidebar.info("💾 Tryb lokalny (Excel / CSV)")
+
+    if st.sidebar.button("🔄 Odśwież dane z chmury", use_container_width=True):
+        st.session_state.df = load_all_data()
+        st.rerun()
+
     if st.sidebar.button("🚪 Zmień moduł (Wyloguj)", use_container_width=True):
         st.session_state.user_role = None
         st.session_state.selected_client_id = None
@@ -442,7 +537,6 @@ if st.session_state.user_role == "koordynator":
             jutro_default = datetime.date.today() + datetime.timedelta(days=1)
             data_planowanej_trasy = st.date_input("2. Data realizacji trasy:", value=jutro_default)
 
-        # Pobranie otwartych zleceń z wybranego rejonu (od CUTOFF_DATE)
         mask_plan_reg = (
             df['Rejon Polski'].str.contains(f"Rejon {wybrany_rejon_trasy}", case=False, na=False) |
             df['Kod pocztowy'].str.startswith(wybrany_rejon_trasy)
@@ -462,7 +556,6 @@ if st.session_state.user_role == "koordynator":
             st.markdown("##### 3. Wybierz zlecenia do trasy i ustaw ich kolejność (1, 2, 3...):")
             st.caption("Zaznacz zlecenia w tabeli lub wpisz numer kolejności (1 = pierwszy klient, 2 = drugi klient itd.).")
 
-            # Przygotowanie danych pod edytor trasy
             route_editor_rows = []
             for idx_r, r_k in kandydaci_df.iterrows():
                 curr_order = str(r_k.get('Kolejnosc_trasy', '')).strip()
@@ -500,7 +593,6 @@ if st.session_state.user_role == "koordynator":
                 for p_line in preview_steps:
                     st.write(p_line)
 
-                # Wygenerowanie linku Google Maps dla koordynatora do sprawdzenia
                 selected_nrs = selected_for_route['Nr'].astype(str).tolist()
                 ordered_df_for_map = pd.concat([df[df['nr.'].astype(str) == n] for n in selected_nrs], ignore_index=True)
                 gmaps_url = build_google_maps_multi_route(ordered_df_for_map)
@@ -508,11 +600,9 @@ if st.session_state.user_role == "koordynator":
                 col_act1, col_act2, col_act3 = st.columns([2, 2, 1])
                 with col_act1:
                     if st.button("✅ ZATWIERDŹ I OPUBLIKUJ TRASĘ DLA SERWISANTA", type="primary", use_container_width=True):
-                        # Najpierw wyczyść starą trasę w tym rejonie
                         df.loc[mask_plan_reg, 'Trasa_aktywna'] = 'False'
                         df.loc[mask_plan_reg, 'Kolejnosc_trasy'] = ''
 
-                        # Zapisz nową kolejność
                         for final_pos, (_, s_row) in enumerate(selected_for_route.iterrows(), 1):
                             nr_val = str(s_row['Nr'])
                             m_idx = df['nr.'].astype(str) == nr_val
@@ -762,7 +852,7 @@ if st.session_state.user_role == "koordynator":
                         
                         st.session_state.selected_client_id = new_client_row['Klient_ID']
                         st.session_state.show_new_client_modal = False
-                        st.success(f"✅ Klient {nc_imie} {nc_nazwisko} dodany do bazy i arkusza Excel!")
+                        st.success(f"✅ Klient {nc_imie} {nc_nazwisko} dodany do bazy!")
                         st.rerun()
 
                 if nc_cancelled:
@@ -860,7 +950,7 @@ if st.session_state.user_role == "koordynator":
                         st.session_state.show_new_ticket_modal = False
 
                 if st.session_state.show_edit_client_modal:
-                    st.info("✏️ Edycja danych tego klienta (zmiany zaktualizują bazę i arkusz Excel):")
+                    st.info("✏️ Edycja danych tego klienta (zmiany zaktualizują bazę):")
                     with st.form("form_edytuj_klienta"):
                         ec_c1, ec_c2 = st.columns(2)
                         with ec_c1:
@@ -907,7 +997,7 @@ if st.session_state.user_role == "koordynator":
 
                                 st.session_state.selected_client_id = new_id
                                 st.session_state.show_edit_client_modal = False
-                                st.success("✅ Dane klienta zostały zaktualizowane w bazie i pliku Excel!")
+                                st.success("✅ Dane klienta zostały zaktualizowane!")
                                 st.rerun()
 
                         if ec_anuluj:
@@ -1062,7 +1152,7 @@ if st.session_state.user_role == "koordynator":
                             save_ticket_persistently(new_row_dict, current_full_df=st.session_state.df)
 
                             st.session_state.show_new_ticket_modal = False
-                            st.success(f"✅ Zgłoszenie #{new_ticket_nr} zapisane w bazie i pliku Excel!")
+                            st.success(f"✅ Zgłoszenie #{new_ticket_nr} zapisane na stałe!")
                             st.rerun()
 
                         if cancel:
@@ -1155,7 +1245,6 @@ elif st.session_state.user_role == "serwisant":
             st.session_state.day_started = False
             st.rerun()
 
-    # Powiadomienie po zamknięciu zlecenia z szybkim SMS-em podsumowującym dla klienta
     if st.session_state.last_closed_summary:
         summ = st.session_state.last_closed_summary
         st.success(f"✅ Zlecenie #{summ['nr']} zostało pomyślnie zapisane!")
@@ -1199,7 +1288,6 @@ elif st.session_state.user_role == "serwisant":
         st.markdown(f"### 🛠️ Rozliczenie / Zamknięcie zlecenia #{ticket['nr.']}")
         st.caption(f"Klient: **{ticket['Imię']} {ticket['Nazwisko']}** | 📍 {ticket['Miejscowość']}, {ticket['Adres']} | Instalacja: **{typ_inst.upper()}**")
 
-        # 1. KROK DYNAMICZNY: CZY PORADZIŁ SOBIE?
         st.markdown("##### 1. Wynik prac serwisowych")
         poradzil_sobie = st.radio(
             "Czy poradziłeś sobie z tym zleceniem?*",
@@ -1209,7 +1297,6 @@ elif st.session_state.user_role == "serwisant":
 
         is_success = "TAK" in poradzil_sobie
 
-        # 2. SZYBKIE KAFELKI ("GOTOWCE" JEDNYM KLIKNIĘCIEM - POZA FORMULARZEM, ABY ODŚWIEŻAŁY POLA)
         st.markdown("---")
         st.markdown("##### ⚡ Szybkie podpowiedzi (kliknij kafelki, aby nie pisać ręcznie)")
         if is_success:
@@ -1237,7 +1324,6 @@ elif st.session_state.user_role == "serwisant":
             key=f"quick_rec_{ticket['nr.']}"
         )
 
-        # 3. KROK DYNAMICZNY: CZY WYMAGANA OFERTA?
         st.markdown("---")
         st.markdown("##### 💼 Zapotrzebowanie na ofertę handlową (dla biura)")
         potrzebna_oferta = st.checkbox(
@@ -1255,19 +1341,16 @@ elif st.session_state.user_role == "serwisant":
                 key=f"txt_szczegoly_oferty_{ticket['nr.']}"
             )
 
-        # SPRAWDZENIE CZY TABLICZKI TEGO KLIENTA SĄ JUŻ W BAZIE
         klient_id_curr = ticket.get('Klient_ID', '')
         klient_ma_juz_tabliczki = (
             (df['Klient_ID'] == klient_id_curr) & 
             (df['Tabliczki_OK'].astype(str).str.lower().isin(['true', '1', 'tak']))
         ).any()
 
-        # Domyślne wartości sklejone z szybkich kafelków
         auto_opis = ", ".join(wybrane_czynnosci) if wybrane_czynnosci else (ticket.get('Komentarz serwisanta', '') or ticket.get('OPIS', ''))
         auto_czesci = ", ".join(wybrane_czesci) if wybrane_czesci else (ticket.get('Zużyte materiały', '') if is_success else ticket.get('Brakujące materiały', ''))
         auto_zalecenia = ". ".join(wybrane_zalecenia) if wybrane_zalecenia else ticket.get('Zalecenia dla klienta', '')
 
-        # FORMULARZ GŁÓWNY ZAMKNIĘCIA
         with st.form(f"form_rozliczenie_{ticket['nr.']}"):
             if is_success:
                 st.success("✅ **Zlecenie zakończone sukcesem:**")
@@ -1445,14 +1528,12 @@ elif st.session_state.user_role == "serwisant":
         )
         tech_df = df[mask_rejon]
 
-    # Ukrycie spraw w trakcie ofertowania handlowego
     ready_for_service_mask = (
         (tech_df['Etap oferty'] != 'Czeka na ofertę handlowca') &
         (tech_df['Etap oferty'] != 'Oczekiwanie na akceptację klienta')
     )
     tech_df = tech_df[ready_for_service_mask]
 
-    # ODCIĘCIE HISTORII: Serwisant widzi w swoich bieżących kolejkach WYŁĄCZNIE sprawy od CUTOFF_DATE (08.10.2026)
     tech_recent_mask = tech_df['DATA ZGŁOSZENIA'].str[:10] >= CUTOFF_DATE
     tech_operational_df = tech_df[tech_recent_mask]
 
@@ -1460,13 +1541,11 @@ elif st.session_state.user_role == "serwisant":
     otwarte_df = tech_operational_df[~is_done].copy()
     zakonczone_df = tech_operational_df[is_done].copy()
 
-    # Sprawdzenie czy koordynator zatwierdził trasę dla tego rejonu
     planned_route_df = otwarte_df[otwarte_df['Trasa_aktywna'].astype(str).str.lower().isin(['true', '1', 'tak'])].copy()
     if not planned_route_df.empty:
         planned_route_df['sort_order'] = pd.to_numeric(planned_route_df['Kolejnosc_trasy'], errors='coerce').fillna(99)
         planned_route_df = planned_route_df.sort_values(by='sort_order')
 
-    # CZTERY ZAKŁADKI SERWISANTA
     tab1, tab2, tab3, tab4 = st.tabs([
         f"⏳ Do zrobienia ({len(otwarte_df)})", 
         f"✅ Zakończone ({len(zakonczone_df)})",
@@ -1513,7 +1592,6 @@ elif st.session_state.user_role == "serwisant":
         </div>
         """, unsafe_allow_html=True)
 
-        # ULEPSZENIE: HISTORIA OBIEKTU W PIGUŁCE BEZPOŚREDNIO NA KARCIE ZLECENIA
         cid = row.get('Klient_ID', '')
         prev_visits = df[(df['Klient_ID'] == cid) & (df['nr.'].astype(str) != str(nr))]
         if not prev_visits.empty:
@@ -1528,7 +1606,6 @@ elif st.session_state.user_role == "serwisant":
 
         wyswietl_multimedia(nr)
 
-        # PRZYCISKI KOMUNIKACJI: TELEFON, SMS I MAPY
         col_a, col_sms, col_b = st.columns(3)
         with col_a:
             if tel_clean:
@@ -1566,7 +1643,6 @@ elif st.session_state.user_role == "serwisant":
         st.write("")
 
     with tab1:
-        # MODUŁ: ROZPOCZNIJ DZIEŃ (ZAPLANOWANA TRASA OD KOORDYNATORA)
         if not planned_route_df.empty:
             route_date_str = planned_route_df.iloc[0].get('Data_trasy', 'Dziś')
             if not st.session_state.day_started:
@@ -1595,7 +1671,6 @@ elif st.session_state.user_role == "serwisant":
         if otwarte_df.empty:
             st.info("🎉 Brak otwartych zleceń od 08.10 w Twoim rejonie!")
         else:
-            # Jeśli dzień rozpoczęty -> na górze pokazujemy trasę wg kolejności, a pod spodem resztę
             if st.session_state.day_started and not planned_route_df.empty:
                 for _, row in planned_route_df.iterrows():
                     render_ticket_card(row, is_open=True)
@@ -1614,7 +1689,6 @@ elif st.session_state.user_role == "serwisant":
                         view_df['Miejscowość'].str.lower().str.contains(q, na=False) |
                         view_df['Adres'].str.lower().str.contains(q, na=False)
                     ]
-                # Sortuj tak, aby ewentualne punkty trasy były wyżej
                 view_df['is_r'] = view_df['Trasa_aktywna'].astype(str).str.lower().isin(['true', '1', 'tak'])
                 view_df['r_ord'] = pd.to_numeric(view_df['Kolejnosc_trasy'], errors='coerce').fillna(999)
                 view_df = view_df.sort_values(by=['is_r', 'r_ord'], ascending=[False, True])
@@ -1629,7 +1703,6 @@ elif st.session_state.user_role == "serwisant":
             for _, row in zakonczone_df.head(20).iterrows():
                 render_ticket_card(row, is_open=False)
 
-    # ZAKŁADKA 3: WYSZUKIWARKA KLIENTA DLA SERWISANTA
     with tab3:
         st.subheader("🔍 Sprawdź historię klienta (np. pomoc telefoniczna)")
         st.caption("Wyszukaj dowolnego klienta w całej bazie (również zlecenia archiwalne sprzed 08.10.2026 r.).")
@@ -1670,7 +1743,6 @@ elif st.session_state.user_role == "serwisant":
                         </div>
                         """, unsafe_allow_html=True)
 
-    # ZAKŁADKA 4: BAZA WIEDZY I KODY BŁĘDÓW DLA SERWISANTA
     with tab4:
         st.subheader("📘 Szybka Baza Wiedzy Technicznej & Kody Błędów")
         st.caption("Ściągawka terenowa dla instalacji solarnych, pomp ciepła, fotowoltaiki i magazynów energii.")
@@ -1679,7 +1751,7 @@ elif st.session_state.user_role == "serwisant":
             st.markdown("""
             * **Ciśnienie spoczynkowe (zimny układ):** powinno wynosić **1.5 – 2.0 bar** (na manometrze grupy pompowej).
             * **Ciśnienie wstępne w naczyniu przeponowym:** ustawić o **0.2 – 0.3 bar niżej** niż ciśnienie robocze układu (sprawdzać przy odłączonym naczyniu).
-            * **Brak odbioru ciepła (wysoka temp. kolektora T1 > 110°C, zimny zbiornik T2):**
+            * **Brak odbioru ciepła (wysoka temp. kolektora T1 powyżej 110°C, zimny zbiornik T2):**
               1. Zapowietrzona grupa pompowa lub kolektor (odpowietrzyć na separatorze powietrza).
               2. Zablokowany wirnik pompy obiegowej lub uszkodzony kondensator.
               3. Zacięty zawór zwrotny pod grupą pompową.
