@@ -352,46 +352,45 @@ def ensure_columns(df):
 
 def load_tickets():
     client = get_gsheet_client()
+    df = pd.DataFrame()
     if client:
         try:
             sh = client.open(GOOGLE_SHEET_NAME)
             ws = sh.get_worksheet(0)
             data = ws.get_all_records()
             if data:
-                return ensure_columns(pd.DataFrame(data))
+                df = pd.DataFrame(data)
         except Exception:
             pass
 
-    if os.path.exists(LOCAL_EXCEL_FILE):
+    if df.empty and os.path.exists(LOCAL_EXCEL_FILE):
         try:
             df = pd.read_excel(LOCAL_EXCEL_FILE)
-            return ensure_columns(df)
         except Exception:
             pass
 
-    sample = pd.DataFrame([
-        {
-            "ID_Zgloszenia": "ZGL-1001", "Klient": "Jan Kowalski", "Adres": "ul. Słoneczna 12",
-            "Kod_Pocztowy": "05-800", "Miasto": "Pruszków", "Telefon": "500100200",
-            "Typ_Instalacji": "Pompa Ciepła + PV", "Opis_Zgloszenia": "Brak grzania CO - błąd sprężarki (Awaria)",
-            "Priorytet_Krytyczny": "Tak", "Typ_Serwisu": "Płatny", "Serwisant": "Leszek",
-            "Data_Planowana": str(datetime.date.today()), "Status": "Zaplanowane",
-            "Naprawione_1_Wizyta": "Tak", "Kwota_Przewidywana": 850.0, "Kwota_Koncowa": 0.0,
-            "Czas_Pracy_Min": 0, "Zalecenia_Klienta": "", "Notatka_Serwisanta": "",
-            "Data_Zamkniecia": "", "Podpis_Zlozony": "Nie"
-        },
-        {
-            "ID_Zgloszenia": "ZGL-1002", "Klient": "Anna Nowak", "Adres": "ul. Lipowa 4",
-            "Kod_Pocztowy": "05-840", "Miasto": "Brwinów", "Telefon": "600200300",
-            "Typ_Instalacji": "Pompa Ciepła", "Opis_Zgloszenia": "Przegląd roczny przed sezonem + czyszczenie filtrów",
-            "Priorytet_Krytyczny": "Nie", "Typ_Serwisu": "Płatny", "Serwisant": "Leszek",
-            "Data_Planowana": str(datetime.date.today()), "Status": "Zaplanowane",
-            "Naprawione_1_Wizyta": "Tak", "Kwota_Przewidywana": 650.0, "Kwota_Koncowa": 0.0,
-            "Czas_Pracy_Min": 0, "Zalecenia_Klienta": "", "Notatka_Serwisanta": "",
-            "Data_Zamkniecia": "", "Podpis_Zlozony": "Nie"
-        }
-    ])
-    return ensure_columns(sample)
+    if df.empty:
+        df = pd.DataFrame([
+            {
+                "ID_Zgloszenia": "ZGL-1001", "Klient": "Jan Kowalski", "Adres": "ul. Słoneczna 12",
+                "Kod_Pocztowy": "05-800", "Miasto": "Pruszków", "Telefon": "500100200",
+                "Typ_Instalacji": "Pompa Ciepła + PV", "Opis_Zgloszenia": "Brak grzania CO - błąd sprężarki (Awaria)",
+                "Priorytet_Krytyczny": "Tak", "Typ_Serwisu": "Płatny", "Serwisant": "Leszek",
+                "Data_Planowana": str(datetime.date.today()), "Status": "Zaplanowane",
+                "Naprawione_1_Wizyta": "Tak", "Kwota_Przewidywana": 850.0, "Kwota_Koncowa": 0.0,
+                "Czas_Pracy_Min": 0, "Zalecenia_Klienta": "", "Notatka_Serwisanta": "",
+                "Data_Zamkniecia": "", "Podpis_Zlozony": "Nie"
+            }
+        ])
+
+    # Gwarantujemy czyste typy i brak wartości None blokujących data_editor
+    df = ensure_columns(df)
+    df = df.fillna("").astype(str)
+    # Przywracamy poprawne typy numeryczne tam gdzie trzeba
+    df["Kwota_Przewidywana"] = pd.to_numeric(df["Kwota_Przewidywana"], errors="coerce").fillna(650.0)
+    df["Kwota_Koncowa"] = pd.to_numeric(df["Kwota_Koncowa"], errors="coerce").fillna(0.0)
+    df["Czas_Pracy_Min"] = pd.to_numeric(df["Czas_Pracy_Min"], errors="coerce").fillna(0)
+    return df
 
 def save_tickets(df):
     st.session_state["df_tickets"] = df.copy()
