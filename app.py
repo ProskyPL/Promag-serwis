@@ -1025,7 +1025,7 @@ elif st.session_state["logged_role"] == "koordynator":
                     st.rerun()
 
         st.subheader("📋 Wszystkie zgłoszenia (Edycja bezpośrednia)")
-edited_df = st.data_editor(df, use_container_width=True, num_rows="dynamic",
+edited_df = st.data_editor(df, use_container_width=True, num_rows="dynamic",)
         if st.button("💾 Zapisz zmiany w tabeli zgłoszeń"):
             save_tickets(edited_df)
             st.success("Baza zgłoszeń została zaktualizowana!")
