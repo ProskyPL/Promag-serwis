@@ -1672,4 +1672,4 @@ elif st.session_state["logged_role"] == "koordynator":
                         e_data_plan = st.text_input("Data planowana (RRRR-MM-DD):", value=str(e_row["Data_Planowana"]))
                         e_przeglad = st.selectbox("Wymagany przegląd (Protokół):", ["Nie", "Tak"], index=1 if str(e_row.get("Wymagany_Przeglad", "Nie")) == "Tak" else 0)
                         e_kryt = st.selectbox("Krytyczne:", ["Nie", "Tak"], index=1 if str(e_row["Priorytet_Krytyczny"]) == "Tak" else 0)
-                        e_kwota = st.number_input("Kwota przewidywana (zł):", min_value=0.0
+                        e_kwota = st.number_input("Kwota przewidywana (zł):", min_value=0.0)
