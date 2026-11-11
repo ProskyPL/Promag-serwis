@@ -151,7 +151,6 @@ DEFAULT_TECHS = {
     }
 }
 
-# Progi prowizyjne (15 000 zł -> 3%, 30 000 zł -> 4%)
 COMMISSION_TIER_1 = 15000.0
 COMMISSION_RATE_1 = 0.03
 COMMISSION_TIER_2 = 30000.0
@@ -170,7 +169,6 @@ CENNIK_BAZOWY = {
     "Serwis Gwarancyjny (Rozliczenie wewnętrzne)": 0.0
 }
 
-# Przybliżone współrzędne geograficzne polskich stref kodowych (pierwsze 2 cyfry kodu pocztowego XX-xxx)
 POSTAL_PREFIX_COORDS = {
     "00": (52.23, 21.01), "01": (52.25, 20.95), "02": (52.18, 21.00), "03": (52.27, 21.08),
     "04": (52.22, 21.15), "05": (52.17, 20.80), "06": (52.88, 20.61), "07": (52.60, 21.80),
@@ -294,7 +292,7 @@ def render_brand_logo(max_width=240, centered=False):
             st.markdown("<h4 style='color:#0ea5e9; margin-bottom:5px;'>⚡ PROMAG SERWIS OZE</h4>", unsafe_allow_html=True)
 
 # ==========================================
-# 4. WCZYTYWANIE I ZAPIS BAZY ZGŁOSZEŃ
+# 4. PANCERNE WCZYTYWANIE I CZYSZCZENIE BAZY ZGŁOSZEŃ
 # ==========================================
 REQUIRED_COLS = [
     "ID_Zgloszenia", "Klient", "Adres", "Kod_Pocztowy", "Miasto", "Telefon",
@@ -304,29 +302,60 @@ REQUIRED_COLS = [
     "Zalecenia_Klienta", "Notatka_Serwisanta", "Data_Zamkniecia", "Podpis_Zlozony"
 ]
 
-def ensure_columns(df):
-    if df.empty:
-        return pd.DataFrame(columns=REQUIRED_COLS)
+ NUMERIC_COLS = ["Kwota_Przewidywana", "Kwota_Koncowa", "Czas_Pracy_Min"]
 
+def ensure_columns(df):
+    if df is None or df.empty:
+        empty_df = pd.DataFrame(columns=REQUIRED_COLS)
+        for nc in NUMERIC_COLS:
+            empty_df[nc] = empty_df[nc].astype(float)
+        return empty_df
+
+    # 1. Czyszczenie nazw kolumn (usuwanie pustych i nienazwanych kolumn z Excela/GSheets)
+    clean_cols = []
+    cols_to_keep = []
+    for idx, c in enumerate(df.columns):
+        c_str = str(c).strip()
+        if c_str != "" and not c_str.lower().startswith("unnamed"):
+            cols_to_keep.append(idx)
+            clean_cols.append(c_str)
+
+    df = df.iloc[:, cols_to_keep].copy()
+    df.columns = clean_cols
+    df = df.loc[:, ~df.columns.duplicated()].copy()
+
+    # 2. Bezpieczne mapowanie nazw kolumn z oryginalnego arkusza (bez tworzenia duplikatów)
     col_map = {}
+    used_targets = set(df.columns)
+
     for c in df.columns:
-        cl = str(c).lower().strip()
-        if "klient" in cl or "nazwisko" in cl or "imie" in cl or "imię" in cl:
-            if "Klient" not in df.columns: col_map[c] = "Klient"
-        elif "adres" in cl or "ulica" in cl:
-            if "Adres" not in df.columns: col_map[c] = "Adres"
-        elif "kod" in cl and "poczt" in cl:
-            if "Kod_Pocztowy" not in df.columns: col_map[c] = "Kod_Pocztowy"
-        elif "miasto" in cl or "miejscowo" in cl:
-            if "Miasto" not in df.columns: col_map[c] = "Miasto"
-        elif "tel" in cl:
-            if "Telefon" not in df.columns: col_map[c] = "Telefon"
-        elif "opis" in cl or "usterk" in cl or "uwag" in cl:
-            if "Opis_Zgloszenia" not in df.columns: col_map[c] = "Opis_Zgloszenia"
+        cl = c.lower()
+        target = None
+        if ("klient" in cl or "nazwisko" in cl or "imie" in cl or "imię" in cl or "inwestor" in cl):
+            target = "Klient"
+        elif ("adres" in cl or "ulica" in cl):
+            target = "Adres"
+        elif ("kod" in cl and "poczt" in cl):
+            target = "Kod_Pocztowy"
+        elif ("miasto" in cl or "miejscowo" in cl):
+            target = "Miasto"
+        elif ("tel" in cl):
+            target = "Telefon"
+        elif ("opis" in cl or "usterk" in cl or "uwag" in cl or "zgłosz" in cl or "zglosz" in cl):
+            target = "Opis_Zgloszenia"
+
+        if target and target not in used_targets:
+            col_map[c] = target
+            used_targets.add(target)
 
     if col_map:
         df = df.rename(columns=col_map)
 
+    # Ponowne usunięcie ewentualnych duplikatów kolumn
+    df = df.loc[:, ~df.columns.duplicated()].copy()
+    df = df.reset_index(drop=True)
+
+    # 3. Uzupełnienie wymaganych kolumn systemowych
     for rc in REQUIRED_COLS:
         if rc not in df.columns:
             if rc == "ID_Zgloszenia":
@@ -339,16 +368,36 @@ def ensure_columns(df):
                 df[rc] = "Płatny"
             elif rc == "Naprawione_1_Wizyta":
                 df[rc] = "Tak"
-            elif rc in ["Kwota_Przewidywana", "Kwota_Koncowa", "Czas_Pracy_Min"]:
-                df[rc] = 650.0 if rc == "Kwota_Przewidywana" else 0.0
+            elif rc == "Kwota_Przewidywana":
+                df[rc] = 650.0
+            elif rc in ["Kwota_Koncowa", "Czas_Pracy_Min"]:
+                df[rc] = 0.0
             else:
                 df[rc] = ""
 
-    df["Kwota_Przewidywana"] = pd.to_numeric(df["Kwota_Przewidywana"], errors="coerce").fillna(650.0)
-    df["Kwota_Koncowa"] = pd.to_numeric(df["Kwota_Koncowa"], errors="coerce").fillna(0.0)
-    df["Czas_Pracy_Min"] = pd.to_numeric(df["Czas_Pracy_Min"], errors="coerce").fillna(0.0)
-    df = df.fillna("")
-    return df
+    # 4. Uporządkowanie kolejności kolumn (najpierw REQUIRED_COLS, potem dodatkowe z arkusza)
+    extra_cols = [c for c in df.columns if c not in REQUIRED_COLS]
+    df = df[REQUIRED_COLS + extra_cols].copy()
+
+    # 5. Rygorystyczna normalizacja typów dla st.data_editor (brak None, NaN, obiektów mieszanych)
+    for col in df.columns:
+        if col in NUMERIC_COLS:
+            default_val = 650.0 if col == "Kwota_Przewidywana" else 0.0
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(default_val).astype(float)
+        else:
+            df[col] = df[col].fillna("").astype(str).replace(["None", "nan", "NaT", "<NA>"], "")
+
+    # Naprawa pustych ID_Zgloszenia
+    empty_id_mask = df["ID_Zgloszenia"].str.strip() == ""
+    if empty_id_mask.any():
+        df.loc[empty_id_mask, "ID_Zgloszenia"] = [f"ZGL-{i+1001}" for i in df.index[empty_id_mask]]
+
+    # Naprawa pustych Statusów
+    empty_status_mask = df["Status"].str.strip() == ""
+    if empty_status_mask.any():
+        df.loc[empty_status_mask, "Status"] = "Nowe"
+
+    return df.reset_index(drop=True)
 
 def load_tickets():
     client = get_gsheet_client()
@@ -357,9 +406,11 @@ def load_tickets():
         try:
             sh = client.open(GOOGLE_SHEET_NAME)
             ws = sh.get_worksheet(0)
-            data = ws.get_all_records()
-            if data:
-                df = pd.DataFrame(data)
+            raw_values = ws.get_all_values()
+            if raw_values and len(raw_values) > 1:
+                headers = raw_values[0]
+                rows = raw_values[1:]
+                df = pd.DataFrame(rows, columns=headers)
         except Exception:
             pass
 
@@ -378,24 +429,28 @@ def load_tickets():
                 "Priorytet_Krytyczny": "Tak", "Typ_Serwisu": "Płatny", "Serwisant": "Leszek",
                 "Data_Planowana": str(datetime.date.today()), "Status": "Zaplanowane",
                 "Naprawione_1_Wizyta": "Tak", "Kwota_Przewidywana": 850.0, "Kwota_Koncowa": 0.0,
-                "Czas_Pracy_Min": 0, "Zalecenia_Klienta": "", "Notatka_Serwisanta": "",
+                "Czas_Pracy_Min": 0.0, "Zalecenia_Klienta": "", "Notatka_Serwisanta": "",
+                "Data_Zamkniecia": "", "Podpis_Zlozony": "Nie"
+            },
+            {
+                "ID_Zgloszenia": "ZGL-1002", "Klient": "Anna Nowak", "Adres": "ul. Lipowa 4",
+                "Kod_Pocztowy": "05-840", "Miasto": "Brwinów", "Telefon": "600200300",
+                "Typ_Instalacji": "Pompa Ciepła", "Opis_Zgloszenia": "Przegląd roczny przed sezonem + czyszczenie filtrów",
+                "Priorytet_Krytyczny": "Nie", "Typ_Serwisu": "Płatny", "Serwisant": "Leszek",
+                "Data_Planowana": str(datetime.date.today()), "Status": "Zaplanowane",
+                "Naprawione_1_Wizyta": "Tak", "Kwota_Przewidywana": 650.0, "Kwota_Koncowa": 0.0,
+                "Czas_Pracy_Min": 0.0, "Zalecenia_Klienta": "", "Notatka_Serwisanta": "",
                 "Data_Zamkniecia": "", "Podpis_Zlozony": "Nie"
             }
         ])
 
-    # Gwarantujemy czyste typy i brak wartości None blokujących data_editor
-    df = ensure_columns(df)
-    df = df.fillna("").astype(str)
-    # Przywracamy poprawne typy numeryczne tam gdzie trzeba
-    df["Kwota_Przewidywana"] = pd.to_numeric(df["Kwota_Przewidywana"], errors="coerce").fillna(650.0)
-    df["Kwota_Koncowa"] = pd.to_numeric(df["Kwota_Koncowa"], errors="coerce").fillna(0.0)
-    df["Czas_Pracy_Min"] = pd.to_numeric(df["Czas_Pracy_Min"], errors="coerce").fillna(0)
-    return df
+    return ensure_columns(df)
 
 def save_tickets(df):
-    st.session_state["df_tickets"] = df.copy()
+    clean_df = ensure_columns(df)
+    st.session_state["df_tickets"] = clean_df.copy()
     try:
-        df.to_excel(LOCAL_EXCEL_FILE, index=False)
+        clean_df.to_excel(LOCAL_EXCEL_FILE, index=False)
     except Exception:
         pass
 
@@ -405,7 +460,7 @@ def save_tickets(df):
             sh = client.open(GOOGLE_SHEET_NAME)
             ws = sh.get_worksheet(0)
             ws.clear()
-            df_str = df.astype(str)
+            df_str = clean_df.fillna("").astype(str)
             ws.update([df_str.columns.values.tolist()] + df_str.values.tolist())
         except Exception as e:
             st.warning(f"Zapisano lokalnie. Synchronizacja z Google Sheets napotkała problem: {e}")
@@ -474,8 +529,8 @@ def generate_smart_routes(df, profiles, start_date, days_ahead=5):
                 cluster_indices.append(cand_idx)
 
         cluster_df = pending.loc[cluster_indices]
-        total_rev = cluster_df["Kwota_Przewidywana"].sum()
-        crit_count = cluster_df["is_crit"].sum()
+        total_rev = float(cluster_df["Kwota_Przewidywana"].sum())
+        crit_count = int(cluster_df["is_crit"].sum())
 
         if total_rev >= 1200.0 or crit_count >= 2:
             for c_i in cluster_indices:
@@ -483,8 +538,8 @@ def generate_smart_routes(df, profiles, start_date, days_ahead=5):
             valid_clusters.append({
                 "indices": cluster_indices,
                 "total_rev": total_rev,
-                "crit_count": int(crit_count),
-                "miasta": ", ".join(cluster_df["Miasto"].astype(str).unique()),
+                "crit_count": crit_count,
+                "miasta": ", ".join([m for m in cluster_df["Miasto"].astype(str).unique() if m]),
                 "count": len(cluster_indices)
             })
 
@@ -530,7 +585,7 @@ def calculate_tech_metrics(df, tech_name):
     current_ym = datetime.date.today().strftime("%Y-%m")
     closed_df["ym"] = closed_df["Data_Zamkniecia"].astype(str).str.slice(0, 7)
     monthly_df = closed_df[(closed_df["ym"] == current_ym) | (closed_df["ym"] == "")]
-    monthly_revenue = monthly_df["Kwota_Koncowa"].sum()
+    monthly_revenue = float(monthly_df["Kwota_Koncowa"].sum())
 
     missing_tier_1 = max(0.0, COMMISSION_TIER_1 - monthly_revenue)
     missing_tier_2 = max(0.0, COMMISSION_TIER_2 - monthly_revenue)
@@ -567,6 +622,8 @@ if "profiles" not in st.session_state or "logo_b64" not in st.session_state:
 
 if "df_tickets" not in st.session_state:
     st.session_state["df_tickets"] = load_tickets()
+else:
+    st.session_state["df_tickets"] = ensure_columns(st.session_state["df_tickets"])
 
 if "logged_role" not in st.session_state:
     st.session_state["logged_role"] = None
@@ -745,7 +802,7 @@ if st.session_state["logged_role"] == "serwisant":
             km_dojazd = st.number_input("Dojazd (km w obie strony powyżej ryczałtu):", min_value=0, step=10, value=0)
 
         with calc_c2:
-            work_minutes = st.number_input("Czas pracy na miejscu (minuty):", min_value=15, step=15, value=int(t_row["Czas_Pracy_Min"]) if t_row["Czas_Pracy_Min"] > 0 else 60)
+            work_minutes = st.number_input("Czas pracy na miejscu (minuty):", min_value=15, step=15, value=int(float(t_row["Czas_Pracy_Min"])) if float(t_row["Czas_Pracy_Min"]) > 0 else 60)
             typ_serwisu_real = st.selectbox("Kwalifikacja zlecenia:", ["Płatny", "Gwarancyjny"], index=0 if t_row["Typ_Serwisu"] != "Gwarancyjny" else 1)
             fixed_first_visit = st.radio(
                 "Czy usterka / zgłoszenie zostało w pełni rozwiązane podczas tej wizyty?",
@@ -789,10 +846,10 @@ if st.session_state["logged_role"] == "serwisant":
             df.loc[t_idx, "Status"] = "Zakończone"
             df.loc[t_idx, "Typ_Serwisu"] = typ_serwisu_real
             df.loc[t_idx, "Naprawione_1_Wizyta"] = "Tak" if fixed_first_visit.startswith("Tak") else "Nie"
-            df.loc[t_idx, "Kwota_Koncowa"] = final_price
-            df.loc[t_idx, "Czas_Pracy_Min"] = work_minutes
-            df.loc[t_idx, "Zalecenia_Klienta"] = client_recommendations
-            df.loc[t_idx, "Notatka_Serwisanta"] = internal_note
+            df.loc[t_idx, "Kwota_Koncowa"] = float(final_price)
+            df.loc[t_idx, "Czas_Pracy_Min"] = float(work_minutes)
+            df.loc[t_idx, "Zalecenia_Klienta"] = str(client_recommendations)
+            df.loc[t_idx, "Notatka_Serwisanta"] = str(internal_note)
             df.loc[t_idx, "Data_Zamkniecia"] = str(datetime.date.today())
             df.loc[t_idx, "Podpis_Zlozony"] = "Tak" if (canvas_result.image_data is not None) else "Nie"
 
@@ -980,9 +1037,9 @@ elif st.session_state["logged_role"] == "koordynator":
                         "Data_Planowana": "" if n_tech == "Auto-Planer" else str(datetime.date.today()),
                         "Status": "Nowe" if n_tech == "Auto-Planer" else "Zaplanowane",
                         "Naprawione_1_Wizyta": "Tak",
-                        "Kwota_Przewidywana": n_kwota,
+                        "Kwota_Przewidywana": float(n_kwota),
                         "Kwota_Koncowa": 0.0,
-                        "Czas_Pracy_Min": 0,
+                        "Czas_Pracy_Min": 0.0,
                         "Zalecenia_Klienta": "",
                         "Notatka_Serwisanta": "",
                         "Data_Zamkniecia": "",
@@ -993,13 +1050,21 @@ elif st.session_state["logged_role"] == "koordynator":
                     st.success(f"Dodano zgłoszenie {new_id}!")
                     st.rerun()
 
-                st.subheader("📋 Wszystkie zgłoszenia (Edycja bezpośrednia)")
-        changes = st.data_editor(df, use_container_width=True, num_rows="dynamic", key="tickets_editor")
-        if st.button("💾 Zapisz zmiany w tabeli zgłoszeń"):
-            save_tickets(changes)
-            st.success("Baza zgłoszeń została zaktualizowana!")
-            st.rerun()
-
+        st.subheader("📋 Wszystkie zgłoszenia (Edycja bezpośrednia)")
+        with st.form("editor_form"):
+            safe_df = ensure_columns(df)
+            edited_df = st.data_editor(
+                safe_df,
+                use_container_width=True,
+                num_rows="dynamic",
+                hide_index=True,
+                key="tickets_editor_safe"
+            )
+            submit_edits = st.form_submit_button("💾 Zapisz zmiany w tabeli zgłoszeń", type="primary")
+            if submit_edits:
+                save_tickets(edited_df)
+                st.success("Baza zgłoszeń została zaktualizowana w Google Sheets!")
+                st.rerun()
 
     with tab_brand:
         st.subheader("🎨 Branding Aplikacji – Wgraj Logo Firmy")
@@ -1065,7 +1130,7 @@ elif st.session_state["logged_role"] == "zarzad":
                 "Serwisy Gwarancyjne": len(t_day[t_day["Typ_Serwisu"] == "Gwarancyjny"]),
                 "Naprawione od ręki (1. wizyta)": len(t_day[t_day["Naprawione_1_Wizyta"] == "Tak"]),
                 "Czas pracy (min)": int(t_day["Czas_Pracy_Min"].sum()),
-                "Przychód (zł)": t_day["Kwota_Koncowa"].sum()
+                "Przychód (zł)": float(t_day["Kwota_Koncowa"].sum())
             })
         st.dataframe(pd.DataFrame(day_rows), use_container_width=True, hide_index=True)
 
