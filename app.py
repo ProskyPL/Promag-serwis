@@ -66,6 +66,18 @@ st.markdown("""
         color: #38bdf8;
         margin-top: 4px;
     }
+    .day-card {
+        background-color: #1e293b;
+        color: #f8fafc;
+        border-radius: 12px;
+        padding: 16px;
+        margin-bottom: 10px;
+        border-left: 6px solid #38bdf8;
+    }
+    .day-card-today {
+        border-left: 6px solid #10b981;
+        background: linear-gradient(135deg, #064e3b 0%, #0f172a 100%);
+    }
     .client-box {
         background-color: #f8fafc;
         border: 2px solid #cbd5e1;
@@ -618,6 +630,10 @@ if "logged_role" not in st.session_state:
     st.session_state["logged_role"] = None
 if "logged_user" not in st.session_state:
     st.session_state["logged_user"] = None
+if "active_day" not in st.session_state:
+    st.session_state["active_day"] = None
+if "active_ticket_id" not in st.session_state:
+    st.session_state["active_ticket_id"] = None
 
 # ==========================================
 # 8. EKRAN GŁÓWNY LOGOWANIA + SZKOLENIE WSTĘPNE
@@ -660,6 +676,8 @@ if st.session_state["logged_role"] is None:
                 if pin_input == expected_pin:
                     st.session_state["logged_role"] = "serwisant"
                     st.session_state["logged_user"] = user_choice
+                    st.session_state["active_day"] = None
+                    st.session_state["active_ticket_id"] = None
                     st.rerun()
                 else:
                     st.error("Nieprawidłowy kod PIN serwisanta.")
@@ -693,18 +711,21 @@ with top_c3:
     if st.button("🚪 Wyloguj"):
         st.session_state["logged_role"] = None
         st.session_state["logged_user"] = None
+        st.session_state["active_day"] = None
+        st.session_state["active_ticket_id"] = None
         st.rerun()
 
 st.divider()
 
 # ==========================================
-# 9. PANEL SERWISANTA
+# 9. PANEL SERWISANTA (POGRUPOWANE DNI -> ROZPOCZNIJ DZIEŃ -> ROZPOCZNIJ ZLECENIE)
 # ==========================================
 if st.session_state["logged_role"] == "serwisant":
     tech_name = st.session_state["logged_user"]
     df = st.session_state["df_tickets"]
     metrics = calculate_tech_metrics(df, tech_name)
 
+    # --- PASEK MOTYWACYJNY NA GÓRZE EKRANU SERWISANTA ---
     m_col1, m_col2, m_col3 = st.columns([1.4, 1.4, 1])
     with m_col1:
         if metrics["missing_tier_1"] > 0:
@@ -748,103 +769,238 @@ if st.session_state["logged_role"] == "serwisant":
 
     st.divider()
 
+    # Filtrowanie niezamkniętych zleceń przypisanych do tego serwisanta
     my_tickets = df[(df["Serwisant"] == tech_name) & (df["Status"] != "Zakończone")].copy()
 
-    st.subheader(f"📋 Twoje aktywne zlecenia ({len(my_tickets)})")
     if my_tickets.empty:
-        st.success("Brak otwartych zleceń przypisanych do Twojego konta.")
+        st.success("🎉 Wszystkie zaplanowane dla Ciebie zlecenia zostały zrealizowane!")
+        st.session_state["active_day"] = None
+        st.session_state["active_ticket_id"] = None
     else:
-        ticket_options = [
-            f"{row['ID_Zgloszenia']} | {row['Miasto']} ({row['Adres']}) - {row['Klient']} [{'🔥 KRYTYCZNE' if row['Priorytet_Krytyczny']=='Tak' else row['Typ_Serwisu']}]"
-            for _, row in my_tickets.iterrows()
-        ]
-        selected_option = st.selectbox("Wybierz zlecenie do obsługi:", ticket_options)
-        selected_id = selected_option.split(" | ")[0]
-        t_idx = df[df["ID_Zgloszenia"] == selected_id].index[0]
-        t_row = df.loc[t_idx]
+        # Uporządkowanie daty planowanej (jeśli jakieś przypisane ręcznie zgłoszenie nie ma daty, przypisujemy dzisiaj)
+        today_str = str(datetime.date.today())
+        my_tickets["Data_Grupa"] = my_tickets["Data_Planowana"].astype(str).str.strip()
+        my_tickets.loc[my_tickets["Data_Grupa"] == "", "Data_Grupa"] = today_str
 
-        c_info1, c_info2 = st.columns([1.2, 1])
-        with c_info1:
-            st.markdown(f"### 👤 Klient: **{t_row['Klient']}**")
-            st.markdown(f"📍 **Adres:** `{t_row['Kod_Pocztowy']} {t_row['Miasto']}, {t_row['Adres']}`")
-            st.markdown(f"📞 **Telefon:** [{t_row['Telefon']}](tel:{t_row['Telefon']})")
-            st.markdown(f"🔧 **Instalacja:** {t_row['Typ_Instalacji']} | **Typ:** `{t_row['Typ_Serwisu']}`")
-            st.markdown(f"📝 **Opis zgłoszenia:** {t_row['Opis_Zgloszenia']}")
+        # =========================================================================
+        # ETAP 1: WIDOK POGRUPOWANYCH DNI (GDY SERWISANT NIE KLIKNĄŁ "ROZPOCZNIJ DZIEŃ")
+        # =========================================================================
+        if st.session_state["active_day"] is None:
+            st.subheader("📅 Twoje zaplanowane dni wyjazdowe (Trasy)")
+            st.caption("Zlecenia są pogrupowane w optymalne trasy dzienne. Kliknij **Rozpocznij dzień**, aby odblokować obsługę klientów zaplanowanych na dany dzień.")
 
-        with c_info2:
-            maps_query = f"{t_row['Adres']} {t_row['Kod_Pocztowy']} {t_row['Miasto']}".replace(" ", "+")
-            st.link_button("🗺️ Nawiguj w Google Maps", f"https://www.google.com/maps/search/?api=1&query={maps_query}")
-            sms_body = f"Dzien dobry, tu serwis OZE. Przypominamy o zaplanowanej wizycie serwisowej pod adresem {t_row['Adres']}."
-            st.link_button("💬 Wyślij SMS do klienta", f"sms:{t_row['Telefon']}?body={sms_body.replace(' ', '%20')}")
+            unique_days = sorted(my_tickets["Data_Grupa"].unique())
 
-        st.divider()
+            for day_str in unique_days:
+                day_cluster = my_tickets[my_tickets["Data_Grupa"] == day_str]
+                pts_count = len(day_cluster)
+                cities_list = ", ".join([m for m in day_cluster["Miasto"].astype(str).unique() if m.strip() != ""])
+                if not cities_list:
+                    cities_list = "Lokalizacje wg adresów"
+                est_rev = float(day_cluster["Kwota_Przewidywana"].sum())
+                crit_cnt = len(day_cluster[day_cluster["Priorytet_Krytyczny"] == "Tak"])
 
-        st.subheader("🛠️ Realizacja wizyty i rozliczenie")
-        calc_c1, calc_c2 = st.columns(2)
-        with calc_c1:
-            selected_services = st.multiselect(
-                "Wykonane czynności z cennika:",
-                options=list(CENNIK_BAZOWY.keys()),
-                default=[]
+                is_today = (day_str == today_str)
+                card_class = "day-card day-card-today" if is_today else "day-card"
+                badge_today = "🟢 DZISIAJ" if is_today else "🗓️ ZAPLANOWANA TRASA"
+
+                with st.container(border=True):
+                    c_day_info, c_day_btn = st.columns([2.2, 1])
+                    with c_day_info:
+                        st.markdown(f"""
+                        <div class="{card_class}">
+                            <div style="font-size:13px; color:#38bdf8; font-weight:700;">{badge_today}</div>
+                            <div style="font-size:22px; font-weight:800; margin-top:2px;">📅 Data trasy: {day_str}</div>
+                            <div style="font-size:15px; margin-top:6px;">📍 <b>Miejscowości:</b> {cities_list}</div>
+                            <div style="font-size:14px; color:#cbd5e1; margin-top:4px;">
+                                🛠️ Punktów na trasie: <b>{pts_count}</b> &nbsp;|&nbsp;
+                                💰 Przewidywany obrót: <b>{est_rev:,.0f} zł</b> &nbsp;|&nbsp;
+                                🔥 Krytyczne: <b>{crit_cnt}</b>
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                        with st.expander(f"👁️ Podgląd punktów w trasie na dzień {day_str} ({pts_count})"):
+                            for idx_pt, (_, r_pt) in enumerate(day_cluster.iterrows(), 1):
+                                crit_tag = " 🔥 [AWARIA / KRYTYCZNE]" if r_pt["Priorytet_Krytyczny"] == "Tak" else ""
+                                st.markdown(
+                                    f"**{idx_pt}. {r_pt['Miasto']}** ({r_pt['Kod_Pocztowy']}), {r_pt['Adres']} – "
+                                    f"*{r_pt['Typ_Instalacji']}*{crit_tag}"
+                                )
+
+                    with c_day_btn:
+                        st.write("")
+                        st.write("")
+                        if st.button(f"🚀 ROZPOCZNIJ DZIEŃ ({day_str})", key=f"start_day_{day_str}", type="primary"):
+                            st.session_state["active_day"] = day_str
+                            st.session_state["active_ticket_id"] = None
+                            st.rerun()
+
+        # =========================================================================
+        # ETAP 2: AKTYWNY DZIEŃ – WYBÓR KLIENTA Z DANEGO DNIA (DECUDUJE SERWISANT)
+        # =========================================================================
+        elif st.session_state["active_day"] is not None and st.session_state["active_ticket_id"] is None:
+            act_day = st.session_state["active_day"]
+            day_tickets = my_tickets[my_tickets["Data_Grupa"] == act_day].copy()
+
+            head_c1, head_c2 = st.columns([2.2, 1])
+            with head_c1:
+                st.subheader(f"🚚 Aktywny dzień pracy: {act_day}")
+                st.caption("Kolejność i godziny wizyt ustalasz samodzielnie w zależności od dostępności klientów. Wybierz klienta i kliknij **Rozpocznij zlecenie**.")
+            with head_c2:
+                if st.button("⬅️ Zmień dzień / Wróć do harmonogramu"):
+                    st.session_state["active_day"] = None
+                    st.session_state["active_ticket_id"] = None
+                    st.rerun()
+
+            if day_tickets.empty:
+                st.success(f"🎉 Wszystkie zlecenia zaplanowane na dzień **{act_day}** zostały zakończone!")
+                if st.button("📅 Wróć do wyboru kolejnego dnia", type="primary"):
+                    st.session_state["active_day"] = None
+                    st.rerun()
+            else:
+                for idx_card, (t_idx, t_row) in enumerate(day_tickets.iterrows(), 1):
+                    t_id = t_row["ID_Zgloszenia"]
+                    is_crit = (str(t_row["Priorytet_Krytyczny"]) == "Tak")
+                    status_badge = "🟡 W TRAKCIE REALIZACJI" if t_row["Status"] == "W trakcie" else "⏳ OCZEKUJE NA WIZYTĘ"
+                    crit_badge = " 🔥 KRYTYCZNE / AWARIA" if is_crit else ""
+
+                    with st.container(border=True):
+                        st.markdown(f"#### Punkt #{idx_card}: **{t_row['Miasto']}** – {t_row['Klient']} `{status_badge}` {crit_badge}")
+                        col_d1, col_d2, col_d3 = st.columns([1.5, 1.2, 1.2])
+
+                        with col_d1:
+                            st.markdown(f"📍 **Adres:** `{t_row['Kod_Pocztowy']} {t_row['Miasto']}, {t_row['Adres']}`")
+                            st.markdown(f"🔧 **Instalacja:** {t_row['Typ_Instalacji']} ({t_row['Typ_Serwisu']})")
+                            st.markdown(f"📝 **Zgłoszenie:** {t_row['Opis_Zgloszenia']}")
+
+                        with col_d2:
+                            st.markdown(f"📞 **Telefon:** [{t_row['Telefon']}](tel:{t_row['Telefon']})")
+                            maps_q = f"{t_row['Adres']} {t_row['Kod_Pocztowy']} {t_row['Miasto']}".replace(" ", "+")
+                            st.link_button("🗺️ Nawiguj (Google Maps)", f"https://www.google.com/maps/search/?api=1&query={maps_q}")
+                            sms_txt = f"Dzien dobry, tu serwis PROMAG OZE. Dzisiaj realizujemy zgloszenie w Państwa okolicy ({t_row['Adres']}). O ktorej godzinie bedzie Pan/Pani w domu?"
+                            st.link_button("💬 SMS: Pytanie o godzinę", f"sms:{t_row['Telefon']}?body={sms_txt.replace(' ', '%20')}")
+
+                        with col_d3:
+                            st.markdown(f"💰 **Szacowana kwota:** `{float(t_row['Kwota_Przewidywana']):,.0f} zł`")
+                            st.write("")
+                            if st.button(f"🛠️ ROZPOCZNIJ ZLECENIE ({t_id})", key=f"start_ticket_{t_id}", type="primary"):
+                                df.loc[t_idx, "Status"] = "W trakcie"
+                                save_tickets(df)
+                                st.session_state["active_ticket_id"] = t_id
+                                st.rerun()
+
+        # =========================================================================
+        # ETAP 3: AKTYWNE ZLECENIE U WYBRANEGO KLIENTA (ROZLICZENIE + PROTOKÓŁ)
+        # =========================================================================
+        elif st.session_state["active_ticket_id"] is not None:
+            selected_id = st.session_state["active_ticket_id"]
+            act_day = st.session_state["active_day"]
+
+            matching_rows = df[df["ID_Zgloszenia"] == selected_id]
+            if matching_rows.empty:
+                st.session_state["active_ticket_id"] = None
+                st.rerun()
+
+            t_idx = matching_rows.index[0]
+            t_row = df.loc[t_idx]
+
+            nav_c1, nav_c2 = st.columns([2.2, 1])
+            with nav_c1:
+                st.subheader(f"🛠️ Obsługa zlecenia: {selected_id} (Dzień: {act_day})")
+            with nav_c2:
+                if st.button("⬅️ Wróć do listy klientów z tego dnia"):
+                    st.session_state["active_ticket_id"] = None
+                    st.rerun()
+
+            c_info1, c_info2 = st.columns([1.3, 1])
+            with c_info1:
+                st.markdown(f"### 👤 Klient: **{t_row['Klient']}**")
+                st.markdown(f"📍 **Adres:** `{t_row['Kod_Pocztowy']} {t_row['Miasto']}, {t_row['Adres']}`")
+                st.markdown(f"📞 **Telefon:** [{t_row['Telefon']}](tel:{t_row['Telefon']})")
+                st.markdown(f"🔧 **Instalacja:** {t_row['Typ_Instalacji']} | **Typ:** `{t_row['Typ_Serwisu']}`")
+                st.markdown(f"📝 **Opis zgłoszenia:** {t_row['Opis_Zgloszenia']}")
+
+            with c_info2:
+                maps_query = f"{t_row['Adres']} {t_row['Kod_Pocztowy']} {t_row['Miasto']}".replace(" ", "+")
+                st.link_button("🗺️ Nawiguj w Google Maps", f"https://www.google.com/maps/search/?api=1&query={maps_query}")
+                sms_body = f"Dzien dobry, tu serwis PROMAG OZE. Jestem w drodze pod adres {t_row['Adres']}."
+                st.link_button("💬 Wyślij SMS: Jestem w drodze", f"sms:{t_row['Telefon']}?body={sms_body.replace(' ', '%20')}")
+
+            st.divider()
+
+            st.subheader("🧾 Rozliczenie wizyty i wykonanych prac")
+            calc_c1, calc_c2 = st.columns(2)
+            with calc_c1:
+                selected_services = st.multiselect(
+                    "Wykonane czynności z cennika:",
+                    options=list(CENNIK_BAZOWY.keys()),
+                    default=[]
+                )
+                extra_parts = st.number_input("Koszt użytych części / materiałów (zł):", min_value=0.0, step=50.0, value=0.0)
+                km_dojazd = st.number_input("Dojazd (km w obie strony powyżej ryczałtu):", min_value=0, step=10, value=0)
+
+            with calc_c2:
+                work_minutes = st.number_input(
+                    "Czas pracy na miejscu (minuty):",
+                    min_value=15,
+                    step=15,
+                    value=int(float(t_row["Czas_Pracy_Min"])) if float(t_row["Czas_Pracy_Min"]) > 0 else 60
+                )
+                typ_serwisu_real = st.selectbox("Kwalifikacja zlecenia:", ["Płatny", "Gwarancyjny"], index=0 if t_row["Typ_Serwisu"] != "Gwarancyjny" else 1)
+                fixed_first_visit = st.radio(
+                    "Czy usterka / zgłoszenie zostało w pełni rozwiązane podczas tej wizyty?",
+                    ["Tak", "Nie (Wymagana kolejna wizyta / zamówienie części)"],
+                    horizontal=True
+                )
+
+            base_sum = sum(CENNIK_BAZOWY[s] for s in selected_services)
+            if base_sum == 0 and typ_serwisu_real == "Płatny":
+                base_sum = float(t_row["Kwota_Przewidywana"])
+            auto_total = 0.0 if typ_serwisu_real == "Gwarancyjny" else (base_sum + extra_parts + (km_dojazd * 2.5))
+
+            final_price = st.number_input("💰 Kwota końcowa do rozliczenia (zł brutto):", min_value=0.0, step=50.0, value=float(auto_total))
+            internal_note = st.text_area("Notatka wewnętrzna dla Koordynatora (niewidoczna dla klienta):", value=str(t_row["Notatka_Serwisanta"]))
+
+            st.markdown('<div class="client-box">', unsafe_allow_html=True)
+            render_brand_logo(max_width=220, centered=False)
+            st.markdown("### 📄 Protokół Odbioru Serwisu i Zalecenia dla Klienta")
+            st.markdown(f"**Klient:** {t_row['Klient']} | **Adres:** {t_row['Kod_Pocztowy']} {t_row['Miasto']}, {t_row['Adres']} | **Data:** {datetime.date.today()}")
+            client_recommendations = st.text_area(
+                "Zalecenia po-serwisowe dla Klienta (widoczne na protokole):",
+                value=str(t_row["Zalecenia_Klienta"]),
+                placeholder="Wpisz zalecenia dotyczące eksploatacji instalacji, ciśnienia w układzie lub terminu kolejnego przeglądu..."
             )
-            extra_parts = st.number_input("Koszt użytych części / materiałów (zł):", min_value=0.0, step=50.0, value=0.0)
-            km_dojazd = st.number_input("Dojazd (km w obie strony powyżej ryczałtu):", min_value=0, step=10, value=0)
+            st.markdown(f"#### Do zapłaty / Rozliczenie: **{final_price:,.2f} zł** ({typ_serwisu_real})")
+            st.markdown("**Podpis Klienta (potwierdzenie wykonania prac i zapoznania się z zaleceniami):**")
 
-        with calc_c2:
-            work_minutes = st.number_input("Czas pracy na miejscu (minuty):", min_value=15, step=15, value=int(float(t_row["Czas_Pracy_Min"])) if float(t_row["Czas_Pracy_Min"]) > 0 else 60)
-            typ_serwisu_real = st.selectbox("Kwalifikacja zlecenia:", ["Płatny", "Gwarancyjny"], index=0 if t_row["Typ_Serwisu"] != "Gwarancyjny" else 1)
-            fixed_first_visit = st.radio(
-                "Czy usterka / zgłoszenie zostało w pełni rozwiązane podczas tej wizyty?",
-                ["Tak", "Nie (Wymagana kolejna wizyta / zamówienie części)"],
-                horizontal=True
+            canvas_result = st_canvas(
+                fill_color="rgba(255, 255, 255, 0)",
+                stroke_width=3,
+                stroke_color="#0f172a",
+                background_color="#ffffff",
+                height=180,
+                width=620,
+                drawing_mode="freedraw",
+                key=f"canvas_{selected_id}"
             )
+            st.markdown('</div>', unsafe_allow_html=True)
 
-        base_sum = sum(CENNIK_BAZOWY[s] for s in selected_services)
-        if base_sum == 0 and typ_serwisu_real == "Płatny":
-            base_sum = float(t_row["Kwota_Przewidywana"])
-        auto_total = 0.0 if typ_serwisu_real == "Gwarancyjny" else (base_sum + extra_parts + (km_dojazd * 2.5))
+            if st.button("✅ ZAKOŃCZ ZLECENIE I WRÓĆ DO TRASY Z TEGO DNIA", type="primary"):
+                df.loc[t_idx, "Status"] = "Zakończone"
+                df.loc[t_idx, "Typ_Serwisu"] = typ_serwisu_real
+                df.loc[t_idx, "Naprawione_1_Wizyta"] = "Tak" if fixed_first_visit.startswith("Tak") else "Nie"
+                df.loc[t_idx, "Kwota_Koncowa"] = float(final_price)
+                df.loc[t_idx, "Czas_Pracy_Min"] = float(work_minutes)
+                df.loc[t_idx, "Zalecenia_Klienta"] = str(client_recommendations)
+                df.loc[t_idx, "Notatka_Serwisanta"] = str(internal_note)
+                df.loc[t_idx, "Data_Zamkniecia"] = str(datetime.date.today())
+                df.loc[t_idx, "Podpis_Zlozony"] = "Tak" if (canvas_result.image_data is not None) else "Nie"
 
-        final_price = st.number_input("💰 Kwota końcowa do rozliczenia (zł brutto):", min_value=0.0, step=50.0, value=float(auto_total))
-        internal_note = st.text_area("Notatka wewnętrzna dla Koordynatora (niewidoczna dla klienta):", value=str(t_row["Notatka_Serwisanta"]))
-
-        st.markdown('<div class="client-box">', unsafe_allow_html=True)
-        render_brand_logo(max_width=220, centered=False)
-        st.markdown("### 📄 Protokół Odbioru Serwisu i Zalecenia dla Klienta")
-        st.markdown(f"**Klient:** {t_row['Klient']} | **Adres:** {t_row['Kod_Pocztowy']} {t_row['Miasto']}, {t_row['Adres']} | **Data:** {datetime.date.today()}")
-        client_recommendations = st.text_area(
-            "Zalecenia po-serwisowe dla Klienta (widoczne na protokole):",
-            value=str(t_row["Zalecenia_Klienta"]),
-            placeholder="Wpisz zalecenia dotyczące eksploatacji instalacji, ciśnienia w układzie lub terminu kolejnego przeglądu..."
-        )
-        st.markdown(f"#### Do zapłaty / Rozliczenie: **{final_price:,.2f} zł** ({typ_serwisu_real})")
-        st.markdown("**Podpis Klienta (potwierdzenie wykonania prac i zapoznania się z zaleceniami):**")
-
-        canvas_result = st_canvas(
-            fill_color="rgba(255, 255, 255, 0)",
-            stroke_width=3,
-            stroke_color="#0f172a",
-            background_color="#ffffff",
-            height=180,
-            width=620,
-            drawing_mode="freedraw",
-            key=f"canvas_{selected_id}"
-        )
-        st.markdown('</div>', unsafe_allow_html=True)
-
-        if st.button("✅ ZAKOŃCZ ZLECENIE I ZAPISZ PROTOKÓŁ", type="primary"):
-            df.loc[t_idx, "Status"] = "Zakończone"
-            df.loc[t_idx, "Typ_Serwisu"] = typ_serwisu_real
-            df.loc[t_idx, "Naprawione_1_Wizyta"] = "Tak" if fixed_first_visit.startswith("Tak") else "Nie"
-            df.loc[t_idx, "Kwota_Koncowa"] = float(final_price)
-            df.loc[t_idx, "Czas_Pracy_Min"] = float(work_minutes)
-            df.loc[t_idx, "Zalecenia_Klienta"] = str(client_recommendations)
-            df.loc[t_idx, "Notatka_Serwisanta"] = str(internal_note)
-            df.loc[t_idx, "Data_Zamkniecia"] = str(datetime.date.today())
-            df.loc[t_idx, "Podpis_Zlozony"] = "Tak" if (canvas_result.image_data is not None) else "Nie"
-
-            save_tickets(df)
-            st.success("Zlecenie zostało zamknięte, a Twoje statystyki prowizyjne zaktualizowane!")
-            st.rerun()
+                save_tickets(df)
+                st.session_state["active_ticket_id"] = None
+                st.success("Zlecenie zostało zamknięte! Wracasz do pozostałych klientów z dzisiejszej trasy.")
+                st.rerun()
 
 # ==========================================
 # 10. PANEL KOORDYNATORA
@@ -1005,6 +1161,7 @@ elif st.session_state["logged_role"] == "koordynator":
                     n_typ_serw = st.selectbox("Rodzaj serwisu:", ["Płatny", "Gwarancyjny"])
                     n_kwota = st.number_input("Przewidywany przychód (zł):", min_value=0.0, step=50.0, value=650.0)
                     n_tech = st.selectbox("Przypisz serwisanta (lub Auto-Planer):", ["Auto-Planer"] + list(profiles.keys()))
+                    n_data_plan = st.date_input("Data planowana (jeśli przypisujesz ręcznie):", value=datetime.date.today())
                     n_opis = st.text_area("Opis usterki / zakres prac:")
 
                     if st.form_submit_button("➕ Zapisz nowe zgłoszenie", type="primary"):
@@ -1021,7 +1178,7 @@ elif st.session_state["logged_role"] == "koordynator":
                             "Priorytet_Krytyczny": n_kryt,
                             "Typ_Serwisu": n_typ_serw,
                             "Serwisant": "" if n_tech == "Auto-Planer" else n_tech,
-                            "Data_Planowana": "" if n_tech == "Auto-Planer" else str(datetime.date.today()),
+                            "Data_Planowana": "" if n_tech == "Auto-Planer" else str(n_data_plan),
                             "Status": "Nowe" if n_tech == "Auto-Planer" else "Zaplanowane",
                             "Naprawione_1_Wizyta": "Tak",
                             "Kwota_Przewidywana": float(n_kwota),
