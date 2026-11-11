@@ -220,7 +220,6 @@ def get_gsheet_client():
     return None
 
 def load_config_and_profiles():
-    """Wczytuje profile serwisantów oraz logo z lokalnego pliku lub z arkusza Config w Google Sheets."""
     profiles = DEFAULT_TECHS.copy()
     logo_b64 = None
 
@@ -254,7 +253,6 @@ def load_config_and_profiles():
     return profiles, logo_b64
 
 def save_config_and_profiles(profiles, logo_b64=None):
-    """Zapisuje profile serwisantów i logo lokalnie oraz w Google Sheets."""
     if logo_b64 is None and "logo_b64" in st.session_state:
         logo_b64 = st.session_state["logo_b64"]
 
@@ -280,7 +278,6 @@ def save_config_and_profiles(profiles, logo_b64=None):
             pass
 
 def render_brand_logo(max_width=240, centered=False):
-    """Wyświetla logo firmy w kluczowych punktach aplikacji."""
     logo_b64 = st.session_state.get("logo_b64", None)
     if logo_b64:
         align_style = "display: block; margin-left: auto; margin-right: auto;" if centered else ""
@@ -311,7 +308,6 @@ def ensure_columns(df):
     if df.empty:
         return pd.DataFrame(columns=REQUIRED_COLS)
 
-    # Mapowanie istniejących kolumn z oryginalnego pliku Excel użytkownika
     col_map = {}
     for c in df.columns:
         cl = str(c).lower().strip()
@@ -373,7 +369,6 @@ def load_tickets():
         except Exception:
             pass
 
-    # Dane startowe demonstracyjne, jeśli baza jest jeszcze pusta
     sample = pd.DataFrame([
         {
             "ID_Zgloszenia": "ZGL-1001", "Klient": "Jan Kowalski", "Adres": "ul. Słoneczna 12",
@@ -417,21 +412,19 @@ def save_tickets(df):
             st.warning(f"Zapisano lokalnie. Synchronizacja z Google Sheets napotkała problem: {e}")
 
 # ==========================================
-# 5. ALGORYTM PLANOWANIA TRAS I KLASTRÓW (CAŁA POLSKA, <=50 KM, >=1200 ZŁ LUB >=2 KRYTYCZNE)
+# 5. ALGORYTM PLANOWANIA TRAS I KLASTRÓW
 # ==========================================
 def extract_coords_from_row(row):
-    """Wyznacza przybliżone współrzędne (lat, lon) z kodu pocztowego XX-XXX lub tekstu adresu."""
     raw_text = f"{row.get('Kod_Pocztowy', '')} {row.get('Adres', '')} {row.get('Miasto', '')}"
     match = re.search(r'\b(\d{2})-\d{3}\b', str(raw_text))
     if match:
         prefix = match.group(1)
         if prefix in POSTAL_PREFIX_COORDS:
-            # Drobny deterministyczny offset na podstawie ostatniej cyfry kodu, aby punkty w tym samym powiecie miały realny rozrzut kilku km
             full_zip = re.sub(r'\D', '', match.group(0))
             offset = (int(full_zip[-2:]) - 50) * 0.003
             base_lat, base_lon = POSTAL_PREFIX_COORDS[prefix]
             return base_lat + offset, base_lon + offset
-    return 52.23, 21.01  # Domyślnie centralna Polska, jeśli brak kodu pocztowego
+    return 52.23, 21.01
 
 def haversine_km(lat1, lon1, lat2, lon2):
     R = 6371.0
@@ -442,7 +435,6 @@ def haversine_km(lat1, lon1, lat2, lon2):
     return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 def is_tech_available(tech_name, target_date_str, profiles):
-    """Sprawdza, czy serwisant nie ma wpisanego urlopu lub L4 w danym dniu."""
     tech_data = profiles.get(tech_name, {})
     absences = tech_data.get("urlopy_l4", [])
     for ab in absences:
@@ -453,12 +445,6 @@ def is_tech_available(tech_name, target_date_str, profiles):
     return True
 
 def generate_smart_routes(df, profiles, start_date, days_ahead=5):
-    """
-    Wyszukuje w całej Polsce klastry zgłoszeń (Status == 'Nowe' lub bez przypisanej daty):
-    - Maksymalnie 4 punkty w klastrze
-    - Odległość każdego punktu w klastrze od punktu centralnego <= 50 km
-    - Warunek opłacalności: Suma Kwota_Przewidywana >= 1200 zł LUB min. 2 zgłoszenia krytyczne
-    """
     pending = df[df["Status"].isin(["Nowe", "Do zaplanowania", ""])].copy()
     if pending.empty:
         return [], "Brak nowych, nieprzypisanych zgłoszeń w bazie."
@@ -471,7 +457,6 @@ def generate_smart_routes(df, profiles, start_date, days_ahead=5):
         axis=1
     )
 
-    # Sortujemy tak, aby zgłoszenia krytyczne oraz wysoko płatne były nasionami klastrów
     pending = pending.sort_values(by=["is_crit", "Kwota_Przewidywana"], ascending=[False, False])
     used_indices = set()
     valid_clusters = []
@@ -493,7 +478,6 @@ def generate_smart_routes(df, profiles, start_date, days_ahead=5):
         total_rev = cluster_df["Kwota_Przewidywana"].sum()
         crit_count = cluster_df["is_crit"].sum()
 
-        # Kryterium biznesowe: min. 1200 zł przewidywanego przychodu LUB min. 2 zgłoszenia krytyczne
         if total_rev >= 1200.0 or crit_count >= 2:
             for c_i in cluster_indices:
                 used_indices.add(c_i)
@@ -508,7 +492,6 @@ def generate_smart_routes(df, profiles, start_date, days_ahead=5):
     if not valid_clusters:
         return [], "Żaden z klastrów nie spełnił warunku minimum 1200 zł lub min. 2 zgłoszeń krytycznych w promieniu 50 km."
 
-    # Przypisywanie klastrów do dostępnych serwisantów na kolejne dni robocze
     tech_names = list(profiles.keys())
     proposals = []
     cluster_ptr = 0
@@ -545,13 +528,11 @@ def calculate_tech_metrics(df, tech_name):
     paid_count = len(closed_df[closed_df["Typ_Serwisu"] == "Płatny"])
     warranty_count = len(closed_df[closed_df["Typ_Serwisu"] == "Gwarancyjny"])
 
-    # Przychód z bieżącego miesiąca (lub łącznie ze zamkniętych zleceń)
     current_ym = datetime.date.today().strftime("%Y-%m")
     closed_df["ym"] = closed_df["Data_Zamkniecia"].astype(str).str.slice(0, 7)
     monthly_df = closed_df[(closed_df["ym"] == current_ym) | (closed_df["ym"] == "")]
     monthly_revenue = monthly_df["Kwota_Koncowa"].sum()
 
-    # Wyliczenie progów: 15 000 zł -> 3%, 30 000 zł -> 4%
     missing_tier_1 = max(0.0, COMMISSION_TIER_1 - monthly_revenue)
     missing_tier_2 = max(0.0, COMMISSION_TIER_2 - monthly_revenue)
 
@@ -672,14 +653,13 @@ with top_c3:
 st.divider()
 
 # ==========================================
-# 9. PANEL SERWISANTA (TELEFON + TABLET, MOTYWATOR PROWIZYJNY, BAZA WIEDZY, PROTOKÓŁ Z LOGO)
+# 9. PANEL SERWISANTA
 # ==========================================
 if st.session_state["logged_role"] == "serwisant":
     tech_name = st.session_state["logged_user"]
     df = st.session_state["df_tickets"]
     metrics = calculate_tech_metrics(df, tech_name)
 
-    # --- PASEK MOTYWACYJNY NA GÓRZE EKRANU SERWISANTA ---
     m_col1, m_col2, m_col3 = st.columns([1.4, 1.4, 1])
     with m_col1:
         if metrics["missing_tier_1"] > 0:
@@ -714,7 +694,6 @@ if st.session_state["logged_role"] == "serwisant":
         if st.button("📚 BAZA WIEDZY (Schematy / Kody błędów)"):
             st.session_state["show_kb"] = not st.session_state.get("show_kb", False)
 
-    # Pasek postępu do 30 000 zł
     progress_val = min(1.0, float(metrics["monthly_revenue"] / COMMISSION_TIER_2))
     st.progress(progress_val, text=f"Postęp obrotu w tym miesiącu: {metrics['monthly_revenue']:,.0f} zł / 30 000 zł ({metrics['active_rate_str']})")
 
@@ -724,7 +703,6 @@ if st.session_state["logged_role"] == "serwisant":
 
     st.divider()
 
-    # --- LISTA ZLECEŃ SERWISANTA (BEZ REJONIZACJI) ---
     my_tickets = df[(df["Serwisant"] == tech_name) & (df["Status"] != "Zakończone")].copy()
 
     st.subheader(f"📋 Twoje aktywne zlecenia ({len(my_tickets)})")
@@ -740,7 +718,6 @@ if st.session_state["logged_role"] == "serwisant":
         t_idx = df[df["ID_Zgloszenia"] == selected_id].index[0]
         t_row = df.loc[t_idx]
 
-        # Karta informacyjna zlecenia (wygodny układ 2-kolumnowy na tablecie, 1-kolumnowy na telefonie)
         c_info1, c_info2 = st.columns([1.2, 1])
         with c_info1:
             st.markdown(f"### 👤 Klient: **{t_row['Klient']}**")
@@ -757,7 +734,6 @@ if st.session_state["logged_role"] == "serwisant":
 
         st.divider()
 
-        # --- KALKULATOR CENY I CZASU PRACY ---
         st.subheader("🛠️ Realizacja wizyty i rozliczenie")
         calc_c1, calc_c2 = st.columns(2)
         with calc_c1:
@@ -786,7 +762,6 @@ if st.session_state["logged_role"] == "serwisant":
         final_price = st.number_input("💰 Kwota końcowa do rozliczenia (zł brutto):", min_value=0.0, step=50.0, value=float(auto_total))
         internal_note = st.text_area("Notatka wewnętrzna dla Koordynatora (niewidoczna dla klienta):", value=str(t_row["Notatka_Serwisanta"]))
 
-        # --- SEKCJA WIDOCZNA DLA KLIENTA (Z BRANDINGIEM / LOGO FIRMY) ---
         st.markdown('<div class="client-box">', unsafe_allow_html=True)
         render_brand_logo(max_width=220, centered=False)
         st.markdown("### 📄 Protokół Odbioru Serwisu i Zalecenia dla Klienta")
@@ -827,7 +802,7 @@ if st.session_state["logged_role"] == "serwisant":
             st.rerun()
 
 # ==========================================
-# 10. PANEL KOORDYNATORA (AUTO-PLANER TRAS, PROFILOWANIE KADRY, ZLECENIA, BRANDING)
+# 10. PANEL KOORDYNATORA
 # ==========================================
 elif st.session_state["logged_role"] == "koordynator":
     df = st.session_state["df_tickets"]
@@ -840,7 +815,6 @@ elif st.session_state["logged_role"] == "koordynator":
         "🎨 Branding (Logo) i Plik Excel"
     ])
 
-    # --- ZAKŁADKA 1: INTELIGENTNE PLANOWANIE TRAS ---
     with tab_plan:
         st.subheader("🗺️ Inteligentne Planowanie Wyjazdów (Cała Polska)")
         st.markdown("""
@@ -888,14 +862,12 @@ elif st.session_state["logged_role"] == "koordynator":
                 st.success("Trasy zostały przypisane do harmonogramu serwisantów!")
                 st.rerun()
 
-    # --- ZAKŁADKA 2: PROFILOWANIE SERWISANTÓW (KADRY, BHP, MEDYCYNA PRACY, URLOPY, WYNIKI) ---
     with tab_kadry:
         st.subheader("👷 Kartoteka Kadrowa, Uprawnienia i Wyniki Serwisantów")
         selected_tech = st.selectbox("Wybierz serwisanta do edycji profilu:", list(profiles.keys()))
         t_prof = profiles[selected_tech]
         t_metrics = calculate_tech_metrics(df, selected_tech)
 
-        # Podsumowanie wyników wybranego serwisanta
         k1, k2, k3, k4 = st.columns(4)
         k1.metric("Obsłużone zgłoszenia", t_metrics["total_closed"], f"Płatne: {t_metrics['paid_count']} | Gwar.: {t_metrics['warranty_count']}")
         k2.metric("Naprawione przy 1. wizycie", f"{t_metrics['ftfr_pct']}%")
@@ -944,7 +916,6 @@ elif st.session_state["logged_role"] == "koordynator":
                 save_config_and_profiles(profiles)
                 st.success(f"Zapisano profil serwisanta {selected_tech}!")
 
-        # Rejestr urlopów i zwolnień lekarskich (L4)
         st.markdown("#### 🏖️ Urlopy i Zwolnienia Lekarskie (L4)")
         u_col1, u_col2, u_col3, u_col4 = st.columns([1, 1, 1, 1])
         with u_col1:
@@ -972,7 +943,6 @@ elif st.session_state["logged_role"] == "koordynator":
                 save_config_and_profiles(profiles)
                 st.rerun()
 
-    # --- ZAKŁADKA 3: BAZA ZGŁOSZEŃ I DODAWANIE NOWEGO ---
     with tab_zlecenia:
         st.subheader("➕ Dodaj nowe zgłoszenie serwisowe")
         with st.expander("Kliknij, aby rozwinąć formularz nowego zgłoszenia", expanded=False):
@@ -1025,12 +995,11 @@ elif st.session_state["logged_role"] == "koordynator":
                     st.rerun()
 
         st.subheader("📋 Wszystkie zgłoszenia (Edycja bezpośrednia)")
-edited_df = st.data_editor(df, use_container_width=True, num_rows="dynamic",)
+        edited_df = st.data_editor(df, use_container_width=True, num_rows="dynamic", key="tickets_editor")
         if st.button("💾 Zapisz zmiany w tabeli zgłoszeń"):
             save_tickets(edited_df)
             st.success("Baza zgłoszeń została zaktualizowana!")
 
-    # --- ZAKŁADKA 4: BRANDING (LOGO FIRMY) I IMPORT EXCEL ---
     with tab_brand:
         st.subheader("🎨 Branding Aplikacji – Wgraj Logo Firmy")
         st.info("Rekomendowane wymiary logo: **400 × 120 px** (proporcje ok. 3:1), format **PNG (z przezroczystym tłem)** lub JPG. Logo wyświetla się na ekranie głównym oraz na protokołach podpisywanych przez klienta.")
@@ -1060,7 +1029,7 @@ edited_df = st.data_editor(df, use_container_width=True, num_rows="dynamic",)
                 st.rerun()
 
 # ==========================================
-# 11. PANEL ZARZĄDU (RAPORTY DZIENNE I MIESIĘCZNE)
+# 11. PANEL ZARZĄDU
 # ==========================================
 elif st.session_state["logged_role"] == "zarzad":
     df = st.session_state["df_tickets"]
