@@ -1420,7 +1420,7 @@ if st.session_state["logged_role"] == "serwisant":
             )
             st.markdown('</div>', unsafe_allow_html=True)
 
-            if st.button("✅ ZAKOŃCZ ZLECENIE I WRÓĆ DO TRASY Z TEGO DNIA", type="primary"):
+                        if st.button("✅ ZAKOŃCZ ZLECENIE I WRÓĆ DO TRASY Z TEGO DNIA", type="primary"):
                 df.loc[t_idx, "Status"] = "Zakończone"
                 df.loc[t_idx, "Typ_Serwisu"] = typ_serwisu_real
                 df.loc[t_idx, "Naprawione_1_Wizyta"] = "Tak" if fixed_first_visit.startswith("Tak") else "Nie"
@@ -1428,15 +1428,22 @@ if st.session_state["logged_role"] == "serwisant":
                 df.loc[t_idx, "Czas_Pracy_Min"] = float(work_minutes)
                 df.loc[t_idx, "Zalecenia_Klienta"] = str(client_recommendations)
                 df.loc[t_idx, "Notatka_Serwisanta"] = str(internal_note)
-                df.loc[t_idx, "Wyniki_Przegladu"] = str(inspection_full_text)
                 df.loc[t_idx, "Data_Zamkniecia"] = str(datetime.date.today())
-                # NOWY ZAPIS (stabilny i zabezpieczony):
-podpisane = "Nie"
-try:
-    if canvas_result is not None and getattr(canvas_result, "image_data", None) is not None:
-        podpisane = "Tak"
-except Exception:
-    podpisane = "Nie"
+                
+                podpisane = "Nie"
+                try:
+                    if canvas_result is not None and getattr(canvas_result, "image_data", None) is not None:
+                        podpisane = "Tak"
+                except Exception:
+                    podpisane = "Nie"
+                
+                df.loc[t_idx, "Podpis_Zlozony"] = podpisane
+
+                save_tickets(df)
+                st.session_state["active_ticket_id"] = None
+                st.success("Zlecenie zostało zamknięte! Wracasz do pozostałych klientów z dzisiejszej trasy.")
+                st.rerun()
+
 
 df.loc[t_idx, "Podpis_Zlozony"] = podpisane
 
