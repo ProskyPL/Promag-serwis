@@ -1430,7 +1430,16 @@ if st.session_state["logged_role"] == "serwisant":
                 df.loc[t_idx, "Notatka_Serwisanta"] = str(internal_note)
                 df.loc[t_idx, "Wyniki_Przegladu"] = str(inspection_full_text)
                 df.loc[t_idx, "Data_Zamkniecia"] = str(datetime.date.today())
-                df.loc[t_idx, "Podpis_Zlozony"] = "Tak" if (canvas_result.image_data is not None) else "Nie"
+                # NOWY ZAPIS (stabilny i zabezpieczony):
+podpisane = "Nie"
+try:
+    if canvas_result is not None and getattr(canvas_result, "image_data", None) is not None:
+        podpisane = "Tak"
+except Exception:
+    podpisane = "Nie"
+
+df.loc[t_idx, "Podpis_Zlozony"] = podpisane
+
 
                 save_tickets(df)
                 st.session_state["active_ticket_id"] = None
