@@ -994,11 +994,13 @@ elif st.session_state["logged_role"] == "koordynator":
                     st.success(f"Dodano zgłoszenie {new_id}!")
                     st.rerun()
 
-        st.subheader("📋 Wszystkie zgłoszenia (Edycja bezpośrednia)")
-        edited_df = st.data_editor(df, use_container_width=True, num_rows="dynamic", key="tickets_editor")
+                st.subheader("📋 Wszystkie zgłoszenia (Edycja bezpośrednia)")
+        changes = st.data_editor(df, use_container_width=True, num_rows="dynamic", key="tickets_editor")
         if st.button("💾 Zapisz zmiany w tabeli zgłoszeń"):
-            save_tickets(edited_df)
+            save_tickets(changes)
             st.success("Baza zgłoszeń została zaktualizowana!")
+            st.rerun()
+
 
     with tab_brand:
         st.subheader("🎨 Branding Aplikacji – Wgraj Logo Firmy")
