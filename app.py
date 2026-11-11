@@ -1,1449 +1,1140 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import datetime
 import os
-import shutil
-import urllib.parse
+import json
+import base64
+import math
+import re
+from io import BytesIO
+from PIL import Image
+from streamlit_drawable_canvas import st_canvas
+import gspread
+from google.oauth2.service_account import Credentials
 
-# Próba załadowania bibliotek Google Drive / Sheets
-try:
-    import gspread
-    from google.oauth2.service_account import Credentials
-    GSPREAD_AVAILABLE = True
-except ImportError:
-    GSPREAD_AVAILABLE = False
-
-# Próba załadowania biblioteki do podpisu palcem na ekranie
-try:
-    from streamlit_drawable_canvas import st_canvas
-    from PIL import Image
-    CANVAS_AVAILABLE = True
-except ImportError:
-    CANVAS_AVAILABLE = False
-
+# ==========================================
+# 1. KONFIGURACJA STRONY I RESPONSYWNY CSS (TELEFON + TABLET)
+# ==========================================
 st.set_page_config(
-    page_title="PROMAG SERWIS - System Obsługi",
+    page_title="PROMAG OZE - System Serwisowy",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# Zwarty blok CSS bez pustych linii - eliminuje błąd wyświetlania stylów jako tekstu w Streamlit
-st.markdown("""<link rel="manifest" href="manifest.json">
-<meta name="theme-color" content="#2b6cb0">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta name="apple-mobile-web-app-capable" content="yes">
+st.markdown("""
 <style>
-html, body, [data-testid="stAppViewContainer"], .main { overflow-x: hidden !important; max-width: 100vw !important; }
-.block-container { padding-top: 1.2rem !important; padding-left: 0.8rem !important; padding-right: 0.8rem !important; padding-bottom: 3rem !important; max-width: 100% !important; }
-#MainMenu {visibility: hidden;}
-footer {visibility: hidden;}
-.stButton > button { min-height: 48px !important; border-radius: 10px !important; font-weight: 700 !important; font-size: 1rem !important; }
-.mobile-card { background-color: #f8f9fa; border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px; margin-bottom: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.04); word-wrap: break-word; }
-.mobile-card-route { background-color: #f0fff4; border: 2px solid #48bb78; border-radius: 12px; padding: 14px; margin-bottom: 12px; box-shadow: 0 3px 6px rgba(0,0,0,0.08); word-wrap: break-word; }
-.badge { display: inline-block; padding: 4px 10px; border-radius: 12px; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; margin-right: 4px; margin-bottom: 4px; }
-.badge-route { background-color: #2f855a; color: #ffffff; }
-.badge-solar { background-color: #feebc8; color: #c05621; }
-.badge-foto { background-color: #fefcbf; color: #975a16; }
-.badge-pompa { background-color: #bee3f8; color: #2b6cb0; }
-.badge-magazyn { background-color: #e9d8fd; color: #6b46c1; }
-.wizard-step-box { background-color: #ebf8ff; border-left: 5px solid #2b6cb0; padding: 12px; border-radius: 8px; margin-bottom: 14px; font-weight: 600; color: #2c5282; }
-</style>""", unsafe_allow_html=True)
+    /* Optymalizacja pod ekrany dotykowe (Telefony i Tablety) */
+    .stButton > button {
+        width: 100%;
+        min-height: 52px;
+        font-size: 16px !important;
+        font-weight: 600 !important;
+        border-radius: 10px !important;
+        margin-bottom: 6px;
+        transition: all 0.2s;
+    }
+    .stSelectbox, .stTextInput, .stNumberInput, .stDateInput {
+        font-size: 16px !important;
+    }
+    /* Kafelki motywacyjne i KPI */
+    .kpi-card {
+        background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+        color: #ffffff;
+        padding: 16px;
+        border-radius: 12px;
+        border-left: 6px solid #10b981;
+        box-shadow: 0 4px 6px -1px rgba(0,0,0,0.15);
+        margin-bottom: 12px;
+    }
+    .kpi-card-warn {
+        border-left: 6px solid #f59e0b;
+    }
+    .kpi-title {
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: #94a3b8;
+        margin-bottom: 4px;
+    }
+    .kpi-value {
+        font-size: 24px;
+        font-weight: 800;
+        color: #f8fafc;
+    }
+    .kpi-sub {
+        font-size: 13px;
+        color: #38bdf8;
+        margin-top: 4px;
+    }
+    /* Nagłówek protokołu klienta z brandingiem */
+    .client-box {
+        background-color: #f8fafc;
+        border: 2px solid #cbd5e1;
+        border-radius: 12px;
+        padding: 18px;
+        margin-top: 12px;
+        margin-bottom: 12px;
+        color: #0f172a;
+    }
+    @media (max-width: 768px) {
+        .kpi-value { font-size: 20px; }
+        .block-container { padding-top: 1.5rem !important; padding-left: 0.8rem !important; padding-right: 0.8rem !important; }
+    }
+</style>
+""", unsafe_allow_html=True)
 
-ATTACHMENTS_DIR = "zalaczniki"
-NOWE_FILE = "nowe_zgloszenia.csv"
-EXCEL_FILE = "Serwisowa posortowana.xlsx"
-CENNIK_FILE = "cennik.csv"
-CENNIK_HIST_FILE = "historia_cen.csv"
-GSHEET_NAME = "PROMAG_BAZA_SERWISOWA"
-os.makedirs(ATTACHMENTS_DIR, exist_ok=True)
+# ==========================================
+# 2. STAŁE, CENNIK I MAPA GEOGRAFICZNA POLSKI (DO KLASTRÓW <= 50 KM)
+# ==========================================
+GOOGLE_SHEET_NAME = "Serwisowa posortowana"
+LOCAL_EXCEL_FILE = "Serwisowa posortowana.xlsx"
+PROFILES_FILE = "profiles.json"
+LOGO_FILE = "logo.png"
 
-CUTOFF_DATE = "2026-10-08"
+PIN_KOORDYNATOR = "1234"
+PIN_ZARZAD = "9999"
 
-DEFAULT_PRICELIST = [
-    {"Kod": "USL-01", "Kategoria": "Ogólne", "Nazwa": "Diagnoza / Dojazd serwisowy", "Cena": 300.0},
-    {"Kod": "SOL-01", "Kategoria": "Solar", "Nazwa": "Przegląd instalacji solarnej + uzupełnienie glikolu", "Cena": 450.0},
-    {"Kod": "SOL-02", "Kategoria": "Solar", "Nazwa": "Wymiana pompy obiegowej / grupy pompowej", "Cena": 650.0},
-    {"Kod": "SOL-03", "Kategoria": "Solar", "Nazwa": "Wymiana naczynia przeponowego 18L/24L", "Cena": 480.0},
-    {"Kod": "PC-01", "Kategoria": "Pompa ciepła", "Nazwa": "Przegląd okresowy pompy ciepła + czyszczenie filtrów", "Cena": 550.0},
-    {"Kod": "PC-02", "Kategoria": "Pompa ciepła", "Nazwa": "Wymiana czujnika przepływu / zaworu 3D", "Cena": 600.0},
-    {"Kod": "PV-01", "Kategoria": "Fotowoltaika", "Nazwa": "Pomiary i przegląd instalacji PV + aktualizacja falownika", "Cena": 450.0},
-    {"Kod": "PV-02", "Kategoria": "Fotowoltaika", "Nazwa": "Konfiguracja połączenia Wi-Fi / Aplikacji monitoringowej", "Cena": 250.0},
-    {"Kod": "MAG-01", "Kategoria": "Magazyn energii", "Nazwa": "Diagnostyka i kalibracja BMS magazynu energii", "Cena": 500.0},
-]
-
-REGION_DEFINITIONS = [
-    {"kod": "0", "nazwa": "Rejon 0 (Warszawa / Mazowieckie)", "krotka": "Rejon 0 - Mazowieckie"},
-    {"kod": "2", "nazwa": "Rejon 2 (Lubelskie / Świętokrzyskie)", "krotka": "Rejon 2 - Lubelskie/Święt."},
-    {"kod": "6", "nazwa": "Rejon 6 (Wielkopolskie / Lubuskie)", "krotka": "Rejon 6 - Wielkopolskie"},
-    {"kod": "8", "nazwa": "Rejon 8 (Pomorskie / Kujawsko-Pomorskie)", "krotka": "Rejon 8 - Pomorskie/Kujawy"},
-    {"kod": "9", "nazwa": "Rejon 9 (Łódzkie)", "krotka": "Rejon 9 - Łódzkie"},
-    {"kod": "3", "nazwa": "Rejon 3 (Małopolskie / Podkarpackie)", "krotka": "Rejon 3 - Małopolskie/Podk."},
-    {"kod": "1", "nazwa": "Rejon 1 (Podlaskie / Warmińsko-Mazurskie)", "krotka": "Rejon 1 - Podlaskie/Warm."},
-    {"kod": "4", "nazwa": "Rejon 4 (Śląskie / Opolskie)", "krotka": "Rejon 4 - Śląskie/Opole"},
-    {"kod": "5", "nazwa": "Rejon 5 (Dolnośląskie)", "krotka": "Rejon 5 - Dolnośląskie"},
-    {"kod": "7", "nazwa": "Rejon 7 (Zachodniopomorskie)", "krotka": "Rejon 7 - Zachodniopomorskie"},
-]
-
-PIN_CONFIG = {
-    "1110": {"rejon_kod": "0", "nazwa_rejonu": "Rejon 0 (Warszawa / Mazowieckie)", "domyslny_serwisant": "Leszek"},
-    "1111": {"rejon_kod": "2", "nazwa_rejonu": "Rejon 2 (Lubelskie / Świętokrzyskie)", "domyslny_serwisant": "Stanisław"},
-    "1112": {"rejon_kod": "6", "nazwa_rejonu": "Rejon 6 (Wielkopolskie / Lubuskie)", "domyslny_serwisant": "Wojtek"},
-    "1113": {"rejon_kod": "8", "nazwa_rejonu": "Rejon 8 (Pomorskie / Kujawsko-Pomorskie)", "domyslny_serwisant": "Mikołaj"},
-    "1114": {"rejon_kod": "9", "nazwa_rejonu": "Rejon 9 (Łódzkie)", "domyslny_serwisant": "Artur"},
-    "1115": {"rejon_kod": "3", "nazwa_rejonu": "Rejon 3 (Małopolskie / Podkarpackie)", "domyslny_serwisant": "Piotr"},
-    "1116": {"rejon_kod": "1", "nazwa_rejonu": "Rejon 1 (Podlaskie / Warmińsko-Mazurskie)", "domyslny_serwisant": "Alex"},
-    "1117": {"rejon_kod": "4", "nazwa_rejonu": "Rejon 4 (Śląskie / Opolskie)", "domyslny_serwisant": "Dominik"},
-    "1118": {"rejon_kod": "5", "nazwa_rejonu": "Rejon 5 (Dolnośląskie)", "domyslny_serwisant": "Hubert"},
-    "1119": {"rejon_kod": "7", "nazwa_rejonu": "Rejon 7 (Zachodniopomorskie)", "domyslny_serwisant": "Piasta"},
-    "9999": {"rejon_kod": "ALL", "nazwa_rejonu": "Dostęp ogólny / Wszystkie", "domyslny_serwisant": "Koordynator"}
+DEFAULT_TECHS = {
+    "Leszek": {
+        "pin": "4829",
+        "pelne_dane": "Leszek - Serwisant OZE",
+        "telefon": "",
+        "umowa": "Umowa o pracę",
+        "wynagrodzenie_bazowe": 6500.0,
+        "bhp_data": "2026-01-15",
+        "bhp_protokol": "BHP/01/2026 - Ważne",
+        "medycyna_data": "2026-01-10",
+        "medycyna_zakres": "Praca powyżej 3m, pomiary elektryczne do 1kV, prawo jazdy kat. B",
+        "urlopy_l4": [],
+        "notatki_poufne": "Doświadczony w pompach ciepła i falownikach hybrydowych."
+    },
+    "Mikołaj": {
+        "pin": "7315",
+        "pelne_dane": "Mikołaj - Serwisant OZE",
+        "telefon": "",
+        "umowa": "B2B",
+        "wynagrodzenie_bazowe": 7000.0,
+        "bhp_data": "2026-02-01",
+        "bhp_protokol": "BHP/02/2026 - Ważne",
+        "medycyna_data": "2026-01-25",
+        "medycyna_zakres": "Praca na wysokości pow. 3m, SEP E+D, F-gazy",
+        "urlopy_l4": [],
+        "notatki_poufne": ""
+    },
+    "Wojtek": {
+        "pin": "5942",
+        "pelne_dane": "Wojtek - Serwisant OZE",
+        "telefon": "",
+        "umowa": "Umowa o pracę",
+        "wynagrodzenie_bazowe": 6000.0,
+        "bhp_data": "2026-03-01",
+        "bhp_protokol": "BHP/03/2026 - Ważne",
+        "medycyna_data": "2026-02-20",
+        "medycyna_zakres": "Praca na wysokości, SEP E, kat. B",
+        "urlopy_l4": [],
+        "notatki_poufne": ""
+    },
+    "Serwisant 4": {
+        "pin": "8164",
+        "pelne_dane": "Wakat (Serwisant 4) - zmień imię w panelu Kadry",
+        "telefon": "",
+        "umowa": "Umowa zlecenie",
+        "wynagrodzenie_bazowe": 6000.0,
+        "bhp_data": "2026-01-01",
+        "bhp_protokol": "Brak",
+        "medycyna_data": "2026-01-01",
+        "medycyna_zakres": "Do uzupełnienia",
+        "urlopy_l4": [],
+        "notatki_poufne": "Konto przygotowane dla 4. serwisanta."
+    }
 }
 
-QUICK_ACTIONS = {
-    "solar": ["Odpowietrzono układ solarny", "Uzupełniono i sprawdzono stężenie glikolu", "Wymieniono pompę obiegową", "Wymieniono naczynie przeponowe", "Skonfigurowano sterownik solarny", "Uszczelniono połączenia śrubunkowe"],
-    "pompa": ["Wyczyszczono filtr siatkowy / magnetyczny", "Skorygowano krzywą grzewczą", "Skasowano błąd i zresetowano sterownik", "Sprawdzono ciśnienie układu CO", "Odpowietrzono układ pompy ciepła", "Wymieniono czujnik temperatury"],
-    "foto": ["Zresetowano i zaktualizowano falownik", "Sprawdzono napięcia stringów DC", "Dokręcono złącza w rozdzielnicy AC/DC", "Ponownie skonfigurowano Wi-Fi / monitoring", "Wymieniono konektory MC4", "Przetestowano zabezpieczenia nadprądowe"],
-    "magazyn": ["Zaktualizowano oprogramowanie BMS", "Wykonano kalibrację SOC baterii", "Sprawdzono komunikację CAN/RS485 z falownikiem", "Zresetowano moduł bateryjny", "Zweryfikowano poprawność ładowania/rozładowania"]
+# Progi prowizyjne (15 000 zł -> 3%, 30 000 zł -> 4%)
+COMMISSION_TIER_1 = 15000.0
+COMMISSION_RATE_1 = 0.03
+COMMISSION_TIER_2 = 30000.0
+COMMISSION_RATE_2 = 0.04
+
+CENNIK_BAZOWY = {
+    "Przegląd/Konserwacja PC (Powietrze)": 650.0,
+    "Przegląd/Konserwacja PC (Grunt)": 850.0,
+    "Przegląd instalacji PV (<10 kWp)": 550.0,
+    "Przegląd instalacji PV (>10 kWp)": 800.0,
+    "Diagnostyka / Awaria Pompy Ciepła": 750.0,
+    "Diagnostyka / Awaria Falownika PV": 600.0,
+    "Czyszczenie filtrów i układu CO": 400.0,
+    "Pomiary elektryczne + Protokół": 650.0,
+    "Modernizacja / Rozbudowa rozdzielnicy": 950.0,
+    "Serwis Gwarancyjny (Rozliczenie wewnętrzne)": 0.0
 }
 
-QUICK_PARTS = {
-    "solar": ["Glikol solarny 5L", "Glikol solarny 10L", "Pompa obiegowa Wilo 25/6", "Naczynie przeponowe 18L", "Naczynie przeponowe 24L", "Odpowietrznik automatyczny", "Zawór zwrotny 3/4 cala", "Czujnik temperatury PT1000"],
-    "pompa": ["Zawór trójdrogowy 1 cal", "Czujnik przepływu", "Filtr magnetyczny 1 cal", "Odpowietrznik automatyczny", "Czujnik temperatury NTC", "Grupa bezpieczeństwa CO"],
-    "foto": ["Komplet złączy MC4", "Ogranicznik przepięć AC/DC", "Wyłącznik nadprądowy B16/C16", "Moduł komunikacyjny Wi-Fi / Logger", "Przewód solarny 6mm2 (5m)"],
-    "magazyn": ["Przewód komunikacyjny CAN/RS485", "Bezpiecznik DC 125A", "Moduł BMS", "Zestaw przewodów mocy DC"]
+# Przybliżone współrzędne geograficzne polskich stref kodowych (pierwsze 2 cyfry kodu pocztowego XX-xxx)
+POSTAL_PREFIX_COORDS = {
+    "00": (52.23, 21.01), "01": (52.25, 20.95), "02": (52.18, 21.00), "03": (52.27, 21.08),
+    "04": (52.22, 21.15), "05": (52.17, 20.80), "06": (52.88, 20.61), "07": (52.60, 21.80),
+    "08": (52.16, 22.28), "09": (52.55, 19.70), "10": (53.78, 20.48), "11": (54.03, 21.00),
+    "12": (53.60, 21.50), "13": (53.35, 19.90), "14": (53.85, 19.80), "15": (53.13, 23.16),
+    "16": (53.65, 23.10), "17": (52.75, 23.40), "18": (53.18, 22.06), "19": (53.83, 22.35),
+    "20": (51.25, 22.57), "21": (51.65, 22.80), "22": (51.05, 23.47), "23": (50.80, 22.30),
+    "24": (51.40, 21.97), "25": (50.87, 20.63), "26": (51.40, 21.15), "27": (50.85, 21.45),
+    "28": (50.45, 20.70), "29": (50.80, 19.95), "30": (50.06, 19.94), "31": (50.08, 20.00),
+    "32": (50.00, 19.65), "33": (50.01, 20.99), "34": (49.65, 19.95), "35": (50.04, 22.00),
+    "36": (50.25, 21.95), "37": (50.00, 22.68), "38": (49.68, 21.76), "39": (50.29, 21.42),
+    "40": (50.26, 19.02), "41": (50.30, 18.95), "42": (50.70, 19.15), "43": (49.95, 18.95),
+    "44": (50.20, 18.60), "45": (50.67, 17.92), "46": (50.75, 18.10), "47": (50.35, 18.20),
+    "48": (50.47, 17.33), "49": (50.75, 17.50), "50": (51.11, 17.04), "51": (51.15, 17.10),
+    "52": (51.07, 17.05), "53": (51.08, 16.98), "54": (51.14, 16.92), "55": (51.05, 17.25),
+    "56": (51.40, 17.35), "57": (50.44, 16.65), "58": (50.84, 16.30), "59": (51.20, 16.16),
+    "60": (52.41, 16.93), "61": (52.39, 16.95), "62": (52.35, 17.50), "63": (51.76, 17.80),
+    "64": (52.75, 16.60), "65": (51.94, 15.51), "66": (52.25, 15.25), "67": (51.66, 16.08),
+    "68": (51.63, 15.14), "69": (52.35, 14.65), "70": (53.43, 14.55), "71": (53.46, 14.50),
+    "72": (53.75, 14.90), "73": (53.34, 15.05), "74": (53.00, 14.60), "75": (54.19, 16.18),
+    "76": (54.46, 17.03), "77": (53.85, 17.25), "78": (53.70, 16.20), "80": (54.35, 18.65),
+    "81": (54.52, 18.53), "82": (54.10, 19.05), "83": (54.10, 18.45), "84": (54.60, 18.20),
+    "85": (53.12, 18.01), "86": (53.45, 18.55), "87": (53.01, 18.60), "88": (52.80, 18.25),
+    "89": (53.58, 17.85), "90": (51.76, 19.46), "91": (51.80, 19.42), "92": (51.75, 19.55),
+    "93": (51.71, 19.47), "94": (51.74, 19.38), "95": (51.88, 19.35), "96": (51.96, 20.15),
+    "97": (51.40, 19.70), "98": (51.60, 18.95), "99": (52.10, 19.25)
 }
 
-QUICK_RECOMMENDATIONS = [
-    "Kontrola ciśnienia na manometrze za 48h",
-    "Nie wyłączać zasilania głównego sterownika",
-    "Obserwować pracę instalacji przez najbliższe 7 dni",
-    "Zgłosić do biura w razie ponownego pojawienia się błędu",
-    "Zalecany przegląd okresowy przed kolejnym sezonem",
-    "Instalacja sprawna, poinstruowano klienta o obsłudze"
-]
-
-if 'cloud_error' not in st.session_state:
-    st.session_state.cloud_error = ""
-
-# =========================================================================
-# OBSŁUGA GOOGLE SHEETS Z JAWNĄ DIAGNOSTYKĄ BŁĘDÓW
-# =========================================================================
-def get_gsheet_connection():
-    if not GSPREAD_AVAILABLE:
-        st.session_state.cloud_error = "Brak biblioteki 'gspread' lub 'google-auth' w pliku requirements.txt na GitHubie!"
-        return None
-    try:
-        if "gcp_service_account" not in st.secrets:
-            st.session_state.cloud_error = "Brak sekcji [gcp_service_account] w ustawieniach Secrets w Streamlit Cloud!"
-            return None
-        scopes = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
-        ]
-        creds = Credentials.from_service_account_info(
-            st.secrets["gcp_service_account"], scopes=scopes
-        )
-        client = gspread.authorize(creds)
-        sh = client.open(GSHEET_NAME)
-        st.session_state.cloud_error = ""
-        return sh
-    except gspread.exceptions.SpreadsheetNotFound:
-        bot_email = st.secrets["gcp_service_account"].get("client_email", "konto-bota")
-        st.session_state.cloud_error = f"Nie znaleziono Arkusza Google o nazwie '{GSHEET_NAME}' lub nie udostępniono go dla: {bot_email} (ważne: na Google Drive musi to być zapisany 'Arkusz Google', a nie zwykły plik .xlsx!)."
-        return None
-    except Exception as e:
-        st.session_state.cloud_error = f"Błąd połączenia z Google Drive: {str(e)}"
-        return None
-
-def get_gsheet_worksheet(sheet_title="Wszystkie posortowane", create_if_missing=False):
-    sh = get_gsheet_connection()
-    if sh is None:
-        return None
-    try:
-        return sh.worksheet(sheet_title)
-    except Exception:
-        if create_if_missing:
-            try:
-                return sh.add_worksheet(title=sheet_title, rows="1000", cols="35")
-            except Exception:
-                return None
-        if sheet_title == "Wszystkie posortowane":
-            try:
-                return sh.get_worksheet(0)
-            except Exception:
-                return None
-        return None
-
-def sync_to_gsheet(df_to_save):
-    ws = get_gsheet_worksheet("Wszystkie posortowane", create_if_missing=False)
-    if ws is None or df_to_save.empty:
-        return False
-    try:
-        clean_df = df_to_save.drop(columns=['Klient_ID'], errors='ignore').fillna('')
-        clean_df = clean_df.astype(str)
-        data_to_upload = [clean_df.columns.values.tolist()] + clean_df.values.tolist()
-        ws.clear()
-        ws.update(data_to_upload)
-        st.session_state.cloud_active = True
-        st.session_state.cloud_error = ""
-        return True
-    except Exception as e:
-        st.session_state.cloud_error = f"Błąd podczas zapisu do Arkusza Google: {str(e)}"
-        return False
-
-# =========================================================================
-# MODUŁ CENNIKA I HISTORII ZMIAN CEN
-# =========================================================================
-def load_pricelist():
-    ws_cennik = get_gsheet_worksheet("Cennik", create_if_missing=True)
-    if ws_cennik is not None:
-        try:
-            records = ws_cennik.get_all_records()
-            if records:
-                df_c = pd.DataFrame(records)
-                df_c['Cena'] = pd.to_numeric(df_c['Cena'], errors='coerce').fillna(0.0)
-                return df_c
-        except Exception:
-            pass
-    if os.path.exists(CENNIK_FILE):
-        try:
-            df_c = pd.read_csv(CENNIK_FILE)
-            df_c['Cena'] = pd.to_numeric(df_c['Cena'], errors='coerce').fillna(0.0)
-            return df_c
-        except Exception:
-            pass
-    df_default = pd.DataFrame(DEFAULT_PRICELIST)
-    save_pricelist(df_default)
-    return df_default
-
-def save_pricelist(df_c):
-    try:
-        df_c.to_csv(CENNIK_FILE, index=False, encoding='utf-8-sig')
-    except Exception:
-        pass
-    ws_cennik = get_gsheet_worksheet("Cennik", create_if_missing=True)
-    if ws_cennik is not None:
-        try:
-            clean_c = df_c.fillna('').astype(str)
-            ws_cennik.clear()
-            ws_cennik.update([clean_c.columns.values.tolist()] + clean_c.values.tolist())
-        except Exception:
-            pass
-
-def load_price_history():
-    ws_hist = get_gsheet_worksheet("Historia_Cen", create_if_missing=True)
-    if ws_hist is not None:
-        try:
-            records = ws_hist.get_all_records()
-            if records:
-                return pd.DataFrame(records)
-        except Exception:
-            pass
-    if os.path.exists(CENNIK_HIST_FILE):
-        try:
-            return pd.read_csv(CENNIK_HIST_FILE)
-        except Exception:
-            pass
-    return pd.DataFrame(columns=["Data zmiany", "Kod", "Nazwa pozycji", "Stara cena (zł)", "Nowa cena (zł)", "Zmienił"])
-
-def append_price_history(history_entries):
-    if not history_entries:
-        return
-    df_hist = load_price_history()
-    new_df = pd.DataFrame(history_entries)
-    updated_hist = pd.concat([new_df, df_hist], ignore_index=True)
-    try:
-        updated_hist.to_csv(CENNIK_HIST_FILE, index=False, encoding='utf-8-sig')
-    except Exception:
-        pass
-    ws_hist = get_gsheet_worksheet("Historia_Cen", create_if_missing=True)
-    if ws_hist is not None:
-        try:
-            clean_h = updated_hist.fillna('').astype(str)
-            ws_hist.clear()
-            ws_hist.update([clean_h.columns.values.tolist()] + clean_h.values.tolist())
-        except Exception:
-            pass
-    st.session_state.price_history_df = updated_hist
-
-# =========================================================================
-# FUNKCJE POMOCNICZE I ŁADOWANIE BAZY ZGŁOSZEŃ
-# =========================================================================
-def get_clean_client_id(row):
-    tel = str(row.get('Numer telefonu', '')).strip()
-    tel_digits = "".join([c for c in tel if c.isdigit()])
-    imie = str(row.get('Imię', '')).strip().lower()
-    nazwisko = str(row.get('Nazwisko', '')).strip().lower()
-    if tel_digits:
-        return f"tel_{tel_digits}"
-    return f"osoba_{imie}_{nazwisko}"
-
-def get_region_name_from_code(kod_pocztowy):
-    clean = str(kod_pocztowy).strip()
-    if clean and clean[0].isdigit():
-        cyfra = clean[0]
-        for r in REGION_DEFINITIONS:
-            if r['kod'] == cyfra:
-                return r['nazwa']
-    return "Rejon 0 (Warszawa / Mazowieckie)"
-
-def build_google_maps_multi_route(tickets_df):
-    addresses = []
-    for _, r in tickets_df.iterrows():
-        addr = f"{r.get('Adres', '')}, {r.get('Kod pocztowy', '')} {r.get('Miejscowość', '')}".strip(', ')
-        if addr and addr != "":
-            addresses.append(urllib.parse.quote(addr))
-    if not addresses:
-        return ""
-    return "https://www.google.com/maps/dir/" + "/".join(addresses)
-
-def wyswietl_multimedia(ticket_nr):
-    ticket_folder = os.path.join(ATTACHMENTS_DIR, str(ticket_nr))
-    if os.path.exists(ticket_folder):
-        files = os.listdir(ticket_folder)
-        if files:
-            st.markdown("📷 **Załączone materiały (zdjęcia / podpis / wideo):**")
-            cols = st.columns(3)
-            for idx, filename in enumerate(files):
-                file_path = os.path.join(ticket_folder, filename)
-                ext = filename.split('.')[-1].lower()
-                with cols[idx % 3]:
-                    if ext in ['jpg', 'jpeg', 'png', 'webp']:
-                        st.image(file_path, caption=filename, use_container_width=True)
-                    elif ext in ['mp4', 'mov', 'avi']:
-                        st.video(file_path)
-                        st.caption(f"🎥 {filename}")
-
-def ensure_required_columns(df):
-    required_cols = [
-        'nr.', 'INSTALACJA', 'DATA ZGŁOSZENIA', 'PRZYJMUJĄCY', 'Imię', 'Nazwisko',
-        'Numer telefonu', 'E-mail', 'Kod pocztowy', 'Miejscowość', 'Adres',
-        'Rejon Polski', 'STATUS ZGŁOSZENIA', 'SERWISANT', 'DATA SERWISU',
-        'OPIS OD KLIENTA', 'OPIS', 'INFORMACJE DODATKOWE', 'Kwota', 'Płatność ',
-        'Zużyte materiały', 'Czynności dodatkowe', 'Ilość przyjazdów', 'Kwota przyjęta',
-        'Komentarz serwisanta', 'Email handlowca', 'Etap oferty', 'Data oferty',
-        'Komentarz koordynatora', 'Zalecenia dla klienta', 'Przyczyna nieukończenia',
-        'Brakujące materiały', 'Szczegóły oferty', 'Tabliczki_OK',
-        'Kolejnosc_trasy', 'Data_trasy', 'Trasa_aktywna', 'Odbior_klienta',
-        'Zdalne', 'Poczekalnia', 'Powod_poczekalni', 'Termin_koncowy',
-        'Pozycje_cennika', 'Cena_bazowa', 'Rabat_proc',
-        'Czas_start', 'Czas_koniec', 'Czas_pracy_min', 'Czas_trasy_min'
+# ==========================================
+# 3. OBSŁUGA GOOGLE SHEETS, PROFILI KADROWYCH I BRANDINGU
+# ==========================================
+def get_gsheet_client():
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
     ]
-    for col in required_cols:
-        if col not in df.columns:
-            df[col] = ''
+    try:
+        if "gcp_service_account" in st.secrets:
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+            return gspread.authorize(creds)
+        elif os.path.exists("credentials.json"):
+            creds = Credentials.from_service_account_file("credentials.json", scopes=scopes)
+            return gspread.authorize(creds)
+    except Exception:
+        return None
+    return None
+
+def load_config_and_profiles():
+    """Wczytuje profile serwisantów oraz logo z lokalnego pliku lub z arkusza Config w Google Sheets."""
+    profiles = DEFAULT_TECHS.copy()
+    logo_b64 = None
+
+    if os.path.exists(PROFILES_FILE):
+        try:
+            with open(PROFILES_FILE, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+                profiles = saved.get("techs", DEFAULT_TECHS)
+                logo_b64 = saved.get("logo_b64", None)
+        except Exception:
+            pass
+
+    client = get_gsheet_client()
+    if client:
+        try:
+            sh = client.open(GOOGLE_SHEET_NAME)
+            try:
+                ws = sh.worksheet("Config_System")
+                raw_json = ws.acell("A1").value
+                raw_logo = ws.acell("B1").value
+                if raw_json:
+                    profiles = json.loads(raw_json)
+                if raw_logo:
+                    logo_b64 = raw_logo
+            except gspread.WorksheetNotFound:
+                ws = sh.add_worksheet(title="Config_System", rows="10", cols="5")
+                ws.update_acell("A1", json.dumps(profiles, ensure_ascii=False))
+        except Exception:
+            pass
+
+    return profiles, logo_b64
+
+def save_config_and_profiles(profiles, logo_b64=None):
+    """Zapisuje profile serwisantów i logo lokalnie oraz w Google Sheets."""
+    if logo_b64 is None and "logo_b64" in st.session_state:
+        logo_b64 = st.session_state["logo_b64"]
+
+    payload = {"techs": profiles, "logo_b64": logo_b64}
+    try:
+        with open(PROFILES_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+    client = get_gsheet_client()
+    if client:
+        try:
+            sh = client.open(GOOGLE_SHEET_NAME)
+            try:
+                ws = sh.worksheet("Config_System")
+            except gspread.WorksheetNotFound:
+                ws = sh.add_worksheet(title="Config_System", rows="10", cols="5")
+            ws.update_acell("A1", json.dumps(profiles, ensure_ascii=False))
+            if logo_b64:
+                ws.update_acell("B1", logo_b64)
+        except Exception:
+            pass
+
+def render_brand_logo(max_width=240, centered=False):
+    """Wyświetla logo firmy w kluczowych punktach aplikacji."""
+    logo_b64 = st.session_state.get("logo_b64", None)
+    if logo_b64:
+        align_style = "display: block; margin-left: auto; margin-right: auto;" if centered else ""
+        st.markdown(
+            f'<img src="data:image/png;base64,{logo_b64}" style="max-width:{max_width}px; max-height:95px; object-fit:contain; {align_style} margin-bottom:10px;" alt="Logo Firmy">',
+            unsafe_allow_html=True
+        )
+    elif os.path.exists(LOGO_FILE):
+        st.image(LOGO_FILE, width=max_width)
+    else:
+        if centered:
+            st.markdown("<h3 style='text-align:center; color:#0ea5e9; margin-bottom:5px;'>⚡ PROMAG SERWIS OZE</h3>", unsafe_allow_html=True)
         else:
-            df[col] = df[col].fillna('').astype(str)
+            st.markdown("<h4 style='color:#0ea5e9; margin-bottom:5px;'>⚡ PROMAG SERWIS OZE</h4>", unsafe_allow_html=True)
 
-    if 'Wymaga oferty' not in df.columns:
-        df['Wymaga oferty'] = False
-    else:
-        df['Wymaga oferty'] = df['Wymaga oferty'].astype(str).str.lower().isin(['true', '1', 'tak'])
+# ==========================================
+# 4. WCZYTYWANIE I ZAPIS BAZY ZGŁOSZEŃ
+# ==========================================
+REQUIRED_COLS = [
+    "ID_Zgloszenia", "Klient", "Adres", "Kod_Pocztowy", "Miasto", "Telefon",
+    "Typ_Instalacji", "Opis_Zgloszenia", "Priorytet_Krytyczny", "Typ_Serwisu",
+    "Serwisant", "Data_Planowana", "Status", "Naprawione_1_Wizyta",
+    "Kwota_Przewidywana", "Kwota_Koncowa", "Czas_Pracy_Min",
+    "Zalecenia_Klienta", "Notatka_Serwisanta", "Data_Zamkniecia", "Podpis_Zlozony"
+]
 
-    if not df.empty:
-        df['Klient_ID'] = df.apply(get_clean_client_id, axis=1)
-    else:
-        df['Klient_ID'] = pd.Series(dtype='str')
+def ensure_columns(df):
+    if df.empty:
+        return pd.DataFrame(columns=REQUIRED_COLS)
+
+    # Mapowanie istniejących kolumn z oryginalnego pliku Excel użytkownika
+    col_map = {}
+    for c in df.columns:
+        cl = str(c).lower().strip()
+        if "klient" in cl or "nazwisko" in cl or "imie" in cl or "imię" in cl:
+            if "Klient" not in df.columns: col_map[c] = "Klient"
+        elif "adres" in cl or "ulica" in cl:
+            if "Adres" not in df.columns: col_map[c] = "Adres"
+        elif "kod" in cl and "poczt" in cl:
+            if "Kod_Pocztowy" not in df.columns: col_map[c] = "Kod_Pocztowy"
+        elif "miasto" in cl or "miejscowo" in cl:
+            if "Miasto" not in df.columns: col_map[c] = "Miasto"
+        elif "tel" in cl:
+            if "Telefon" not in df.columns: col_map[c] = "Telefon"
+        elif "opis" in cl or "usterk" in cl or "uwag" in cl:
+            if "Opis_Zgloszenia" not in df.columns: col_map[c] = "Opis_Zgloszenia"
+
+    if col_map:
+        df = df.rename(columns=col_map)
+
+    for rc in REQUIRED_COLS:
+        if rc not in df.columns:
+            if rc == "ID_Zgloszenia":
+                df[rc] = [f"ZGL-{i+1001}" for i in range(len(df))]
+            elif rc == "Status":
+                df[rc] = "Nowe"
+            elif rc == "Priorytet_Krytyczny":
+                df[rc] = "Nie"
+            elif rc == "Typ_Serwisu":
+                df[rc] = "Płatny"
+            elif rc == "Naprawione_1_Wizyta":
+                df[rc] = "Tak"
+            elif rc in ["Kwota_Przewidywana", "Kwota_Koncowa", "Czas_Pracy_Min"]:
+                df[rc] = 650.0 if rc == "Kwota_Przewidywana" else 0.0
+            else:
+                df[rc] = ""
+
+    df["Kwota_Przewidywana"] = pd.to_numeric(df["Kwota_Przewidywana"], errors="coerce").fillna(650.0)
+    df["Kwota_Koncowa"] = pd.to_numeric(df["Kwota_Koncowa"], errors="coerce").fillna(0.0)
+    df["Czas_Pracy_Min"] = pd.to_numeric(df["Czas_Pracy_Min"], errors="coerce").fillna(0.0)
+    df = df.fillna("")
     return df
 
-def load_all_data():
-    df = pd.DataFrame()
-    ws = get_gsheet_worksheet("Wszystkie posortowane", create_if_missing=False)
-    loaded_from_cloud = False
-
-    if ws is not None:
+def load_tickets():
+    client = get_gsheet_client()
+    if client:
         try:
-            records = ws.get_all_records()
-            if records:
-                df = pd.DataFrame(records)
-                loaded_from_cloud = True
-                st.session_state.cloud_active = True
-        except Exception as e:
-            st.session_state.cloud_error = f"Błąd odczytu rekordów z Arkusza Google: {str(e)}"
+            sh = client.open(GOOGLE_SHEET_NAME)
+            ws = sh.get_worksheet(0)
+            data = ws.get_all_records()
+            if data:
+                return ensure_columns(pd.DataFrame(data))
+        except Exception:
+            pass
 
-    if not loaded_from_cloud:
-        st.session_state.cloud_active = False
-        base_df = pd.DataFrame()
-        if os.path.exists(EXCEL_FILE):
-            try:
-                base_df = pd.read_excel(EXCEL_FILE, sheet_name="Wszystkie posortowane")
-            except Exception:
-                try:
-                    base_df = pd.read_excel(EXCEL_FILE, sheet_name=0)
-                except Exception:
-                    base_df = pd.DataFrame()
+    if os.path.exists(LOCAL_EXCEL_FILE):
+        try:
+            df = pd.read_excel(LOCAL_EXCEL_FILE)
+            return ensure_columns(df)
+        except Exception:
+            pass
 
-        if os.path.exists(NOWE_FILE):
-            try:
-                nowe_df = pd.read_csv(NOWE_FILE, dtype=str)
-                df = pd.concat([nowe_df, base_df], ignore_index=True)
-                if 'nr.' in df.columns:
-                    df = df.drop_duplicates(subset=['nr.'], keep='first')
-            except Exception:
-                df = base_df
-        else:
-            df = base_df
+    # Dane startowe demonstracyjne, jeśli baza jest jeszcze pusta
+    sample = pd.DataFrame([
+        {
+            "ID_Zgloszenia": "ZGL-1001", "Klient": "Jan Kowalski", "Adres": "ul. Słoneczna 12",
+            "Kod_Pocztowy": "05-800", "Miasto": "Pruszków", "Telefon": "500100200",
+            "Typ_Instalacji": "Pompa Ciepła + PV", "Opis_Zgloszenia": "Brak grzania CO - błąd sprężarki (Awaria)",
+            "Priorytet_Krytyczny": "Tak", "Typ_Serwisu": "Płatny", "Serwisant": "Leszek",
+            "Data_Planowana": str(datetime.date.today()), "Status": "Zaplanowane",
+            "Naprawione_1_Wizyta": "Tak", "Kwota_Przewidywana": 850.0, "Kwota_Koncowa": 0.0,
+            "Czas_Pracy_Min": 0, "Zalecenia_Klienta": "", "Notatka_Serwisanta": "",
+            "Data_Zamkniecia": "", "Podpis_Zlozony": "Nie"
+        },
+        {
+            "ID_Zgloszenia": "ZGL-1002", "Klient": "Anna Nowak", "Adres": "ul. Lipowa 4",
+            "Kod_Pocztowy": "05-840", "Miasto": "Brwinów", "Telefon": "600200300",
+            "Typ_Instalacji": "Pompa Ciepła", "Opis_Zgloszenia": "Przegląd roczny przed sezonem + czyszczenie filtrów",
+            "Priorytet_Krytyczny": "Nie", "Typ_Serwisu": "Płatny", "Serwisant": "Leszek",
+            "Data_Planowana": str(datetime.date.today()), "Status": "Zaplanowane",
+            "Naprawione_1_Wizyta": "Tak", "Kwota_Przewidywana": 650.0, "Kwota_Koncowa": 0.0,
+            "Czas_Pracy_Min": 0, "Zalecenia_Klienta": "", "Notatka_Serwisanta": "",
+            "Data_Zamkniecia": "", "Podpis_Zlozony": "Nie"
+        }
+    ])
+    return ensure_columns(sample)
 
-        df = ensure_required_columns(df)
-        if ws is not None and not df.empty:
-            if sync_to_gsheet(df):
-                st.session_state.cloud_active = True
-        return df
-
-    return ensure_required_columns(df)
-
-def sync_excel_file(df_to_save):
-    if df_to_save.empty:
-        return
-    if sync_to_gsheet(df_to_save):
-        st.session_state.cloud_active = True
+def save_tickets(df):
+    st.session_state["df_tickets"] = df.copy()
     try:
-        if os.path.exists(EXCEL_FILE):
-            shutil.copyfile(EXCEL_FILE, f"{EXCEL_FILE}.bak")
-        clean_save_df = df_to_save.drop(columns=['Klient_ID'], errors='ignore')
-        with pd.ExcelWriter(EXCEL_FILE, engine='openpyxl') as writer:
-            clean_save_df.to_excel(writer, sheet_name="Wszystkie posortowane", index=False)
-    except Exception as e:
-        print(f"Błąd zapisu lokalnego Excel: {e}")
+        df.to_excel(LOCAL_EXCEL_FILE, index=False)
+    except Exception:
+        pass
 
-def save_ticket_persistently(ticket_dict, current_full_df=None):
-    df_single = pd.DataFrame([ticket_dict])
-    if os.path.exists(NOWE_FILE):
+    client = get_gsheet_client()
+    if client:
         try:
-            existing_nowe = pd.read_csv(NOWE_FILE, dtype=str)
-            if str(ticket_dict.get('nr.', '')) in existing_nowe['nr.'].astype(str).values:
-                existing_nowe = existing_nowe[existing_nowe['nr.'].astype(str) != str(ticket_dict.get('nr.', ''))]
-            updated = pd.concat([df_single, existing_nowe], ignore_index=True)
-            updated.to_csv(NOWE_FILE, index=False, encoding='utf-8-sig')
-        except Exception:
-            df_single.to_csv(NOWE_FILE, index=False, encoding='utf-8-sig')
-    else:
-        df_single.to_csv(NOWE_FILE, index=False, encoding='utf-8-sig')
-    if current_full_df is not None:
-        sync_excel_file(current_full_df)
+            sh = client.open(GOOGLE_SHEET_NAME)
+            ws = sh.get_worksheet(0)
+            ws.clear()
+            df_str = df.astype(str)
+            ws.update([df_str.columns.values.tolist()] + df_str.values.tolist())
+        except Exception as e:
+            st.warning(f"Zapisano lokalnie. Synchronizacja z Google Sheets napotkała problem: {e}")
 
-def save_multiple_tickets_persistently(updated_df_rows, current_full_df=None):
-    if updated_df_rows.empty:
-        return
-    if os.path.exists(NOWE_FILE):
-        try:
-            existing_nowe = pd.read_csv(NOWE_FILE, dtype=str)
-            updated_nrs = updated_df_rows['nr.'].astype(str).values
-            existing_nowe = existing_nowe[~existing_nowe['nr.'].astype(str).isin(updated_nrs)]
-            merged = pd.concat([updated_df_rows, existing_nowe], ignore_index=True)
-            merged.to_csv(NOWE_FILE, index=False, encoding='utf-8-sig')
-        except Exception:
-            updated_df_rows.to_csv(NOWE_FILE, index=False, encoding='utf-8-sig')
-    else:
-        updated_df_rows.to_csv(NOWE_FILE, index=False, encoding='utf-8-sig')
-    if current_full_df is not None:
-        sync_excel_file(current_full_df)
+# ==========================================
+# 5. ALGORYTM PLANOWANIA TRAS I KLASTRÓW (CAŁA POLSKA, <=50 KM, >=1200 ZŁ LUB >=2 KRYTYCZNE)
+# ==========================================
+def extract_coords_from_row(row):
+    """Wyznacza przybliżone współrzędne (lat, lon) z kodu pocztowego XX-XXX lub tekstu adresu."""
+    raw_text = f"{row.get('Kod_Pocztowy', '')} {row.get('Adres', '')} {row.get('Miasto', '')}"
+    match = re.search(r'\b(\d{2})-\d{3}\b', str(raw_text))
+    if match:
+        prefix = match.group(1)
+        if prefix in POSTAL_PREFIX_COORDS:
+            # Drobny deterministyczny offset na podstawie ostatniej cyfry kodu, aby punkty w tym samym powiecie miały realny rozrzut kilku km
+            full_zip = re.sub(r'\D', '', match.group(0))
+            offset = (int(full_zip[-2:]) - 50) * 0.003
+            base_lat, base_lon = POSTAL_PREFIX_COORDS[prefix]
+            return base_lat + offset, base_lon + offset
+    return 52.23, 21.01  # Domyślnie centralna Polska, jeśli brak kodu pocztowego
 
-# Inicjalizacja stanu aplikacji
-if 'cloud_active' not in st.session_state:
-    st.session_state.cloud_active = False
-if 'df' not in st.session_state:
-    st.session_state.df = load_all_data()
-if 'pricelist_df' not in st.session_state:
-    st.session_state.pricelist_df = load_pricelist()
-if 'price_history_df' not in st.session_state:
-    st.session_state.price_history_df = load_price_history()
-if 'user_role' not in st.session_state:
-    st.session_state.user_role = None
-if 'tech_pin' not in st.session_state:
-    st.session_state.tech_pin = None
-if 'board_authenticated' not in st.session_state:
-    st.session_state.board_authenticated = False
-if 'selected_client_id' not in st.session_state:
-    st.session_state.selected_client_id = None
-if 'show_new_ticket_modal' not in st.session_state:
-    st.session_state.show_new_ticket_modal = False
-if 'show_new_client_modal' not in st.session_state:
-    st.session_state.show_new_client_modal = False
-if 'show_edit_client_modal' not in st.session_state:
-    st.session_state.show_edit_client_modal = False
-if 'active_ticket_nr' not in st.session_state:
-    st.session_state.active_ticket_nr = None
-if 'day_started' not in st.session_state:
-    st.session_state.day_started = False
-if 'last_closed_summary' not in st.session_state:
-    st.session_state.last_closed_summary = None
-if 'coord_sms_notification' not in st.session_state:
-    st.session_state.coord_sms_notification = None
-if 'tech_main_screen' not in st.session_state:
-    st.session_state.tech_main_screen = "otwarte"
-if 'wizard_step' not in st.session_state:
-    st.session_state.wizard_step = 1
-if 'wizard_data' not in st.session_state:
-    st.session_state.wizard_data = {}
+def haversine_km(lat1, lon1, lat2, lon2):
+    R = 6371.0
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2.0)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2.0)**2
+    return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
-def get_next_ticket_id():
-    if st.session_state.df.empty:
-        return 1
-    existing_nrs = st.session_state.df['nr.'].astype(str).tolist()
-    max_id = 0
-    for n in existing_nrs:
-        clean = n.replace('N', '').replace('#', '').replace('K', '').strip()
-        if clean.isdigit():
-            val = int(clean)
-            if val > max_id:
-                max_id = val
-    return max_id + 1
+def is_tech_available(tech_name, target_date_str, profiles):
+    """Sprawdza, czy serwisant nie ma wpisanego urlopu lub L4 w danym dniu."""
+    tech_data = profiles.get(tech_name, {})
+    absences = tech_data.get("urlopy_l4", [])
+    for ab in absences:
+        start_d = ab.get("od", "")
+        end_d = ab.get("do", "")
+        if start_d <= target_date_str <= end_d:
+            return False
+    return True
 
-# --- EKRAN STARTOWY: WYBÓR ROLI ---
-if not st.session_state.user_role:
-    st.markdown("<h2 style='text-align: center; margin-top: 1rem;'>⚡ PROMAG SERWIS</h2>", unsafe_allow_html=True)
-    if st.session_state.cloud_active:
-        st.markdown("<p style='text-align: center; color: #2f855a; font-weight: bold;'>☁️ Połączono z bazą Google Drive (Zapis trwały aktywny)</p>", unsafe_allow_html=True)
-    elif st.session_state.cloud_error:
-        st.warning(f"⚠️ **Uwaga dot. zapisu na Google Drive:** {st.session_state.cloud_error}")
+def generate_smart_routes(df, profiles, start_date, days_ahead=5):
+    """
+    Wyszukuje w całej Polsce klastry zgłoszeń (Status == 'Nowe' lub bez przypisanej daty):
+    - Maksymalnie 4 punkty w klastrze
+    - Odległość każdego punktu w klastrze od punktu centralnego <= 50 km
+    - Warunek opłacalności: Suma Kwota_Przewidywana >= 1200 zł LUB min. 2 zgłoszenia krytyczne
+    """
+    pending = df[df["Status"].isin(["Nowe", "Do zaplanowania", ""])].copy()
+    if pending.empty:
+        return [], "Brak nowych, nieprzypisanych zgłoszeń w bazie."
 
-    col_r1, col_r2, col_r3 = st.columns(3)
-    with col_r1:
-        st.info("### 🖥️ Panel Koordynatora")
-        st.write("Baza klientów, poczekalnia, zgłoszenia zdalne, cennik z historią i rabatami, SMS oraz trasy.")
-        if st.button("Wejdź jako Koordynator", use_container_width=True, type="primary"):
-            st.session_state.user_role = "koordynator"
-            st.rerun()
-
-    with col_r2:
-        st.success("### 📱 Panel Serwisanta")
-        st.write("Wygodny interfejs jednoekranowy pod jedną dłoń, trasa na dziś, szybkie kafelki i podpis klienta.")
-        if st.button("Wejdź jako Serwisant (PIN)", use_container_width=True):
-            st.session_state.user_role = "serwisant"
-            st.rerun()
-
-    with col_r3:
-        st.warning("### 📊 Panel Zarządu")
-        st.write("Podgląd zleceń i archiwum, statystyki serwisantów: zyski, czas pracy na instalacjach i czas w trasie.")
-        if st.button("Wejdź jako Zarząd (PIN)", use_container_width=True):
-            st.session_state.user_role = "zarzad"
-            st.rerun()
-    st.stop()
-
-# =========================================================================
-# 1. MODUŁ KOORDYNATORA
-# =========================================================================
-if st.session_state.user_role == "koordynator":
-    df = st.session_state.df
-    pricelist_df = st.session_state.pricelist_df
-
-    st.sidebar.title("⚡ Koordynator")
-    if st.session_state.cloud_active:
-        st.sidebar.success("☁️ Baza Google Drive: AKTYWNA")
-    else:
-        st.sidebar.error("💾 Tryb lokalny (Brak połączenia z chmurą)")
-        if st.session_state.cloud_error:
-            st.sidebar.caption(f"Powód: {st.session_state.cloud_error}")
-
-    if st.sidebar.button("🔄 Odśwież / Połącz z Google Drive", use_container_width=True):
-        st.session_state.df = load_all_data()
-        st.session_state.pricelist_df = load_pricelist()
-        st.session_state.price_history_df = load_price_history()
-        st.rerun()
-
-    if st.sidebar.button("🚪 Zmień moduł (Wyloguj)", use_container_width=True):
-        st.session_state.user_role = None
-        st.session_state.selected_client_id = None
-        st.session_state.show_edit_client_modal = False
-        st.session_state.show_new_ticket_modal = False
-        st.session_state.active_ticket_nr = None
-        st.rerun()
-
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("📍 Rejony Pocztowe")
-    st.sidebar.caption(f"Sortowanie wg zgłoszeń od **{CUTOFF_DATE}**:")
-
-    is_active_since_cutoff = df['DATA ZGŁOSZENIA'].str[:10] >= CUTOFF_DATE
-
-    region_stats = []
-    for r_def in REGION_DEFINITIONS:
-        r_kod = r_def['kod']
-        mask_r = (
-            df['Rejon Polski'].str.contains(f"Rejon {r_kod}", case=False, na=False) |
-            df['Kod pocztowy'].str.startswith(r_kod)
-        )
-        total_in_r = mask_r.sum()
-        active_in_r = (mask_r & is_active_since_cutoff).sum()
-        pending_in_r = (mask_r & is_active_since_cutoff & ~df['STATUS ZGŁOSZENIA'].str.lower().str.contains('zakończ|anulow', na=False)).sum()
-        region_stats.append({
-            'kod': r_kod, 'krotka': r_def['krotka'], 'pelna': r_def['nazwa'],
-            'active': active_in_r, 'pending': pending_in_r, 'total': total_in_r
-        })
-
-    region_stats_sorted = sorted(region_stats, key=lambda x: x['active'], reverse=True)
-    all_region_keys = ["ALL"] + [r['kod'] for r in region_stats_sorted]
-    total_active_all = is_active_since_cutoff.sum()
-
-    region_labels = {"ALL": f"🌐 Wszystkie rejony ({total_active_all} zgłoszeń od {CUTOFF_DATE})"}
-    for r in region_stats_sorted:
-        lbl = f"📍 {r['krotka']} — {r['active']} zgłoszeń"
-        if r['pending'] > 0:
-            lbl += f" ({r['pending']} w toku)"
-        region_labels[r['kod']] = lbl
-
-    selected_region_code = st.sidebar.radio(
-        "Wybierz rejon do podglądu:",
-        options=all_region_keys,
-        format_func=lambda x: region_labels.get(x, x)
+    coords = pending.apply(extract_coords_from_row, axis=1)
+    pending["lat"] = [c[0] for c in coords]
+    pending["lon"] = [c[1] for c in coords]
+    pending["is_crit"] = pending.apply(
+        lambda r: 1 if str(r.get("Priorytet_Krytyczny", "")).lower() == "tak" or "awaria" in str(r.get("Opis_Zgloszenia", "")).lower() else 0,
+        axis=1
     )
 
-    st.title("🖥️ Pulpit Koordynatora")
-
-    # Ratunkowe wgrywanie bazy Excel, jeśli chmura lub kontener były puste
-    if df.empty:
-        st.error("⚠️ Obecnie baza zgłoszeń jest pusta! Możesz poniżej wgrać swój plik `Serwisowa posortowana.xlsx` – zostanie on od razu wysłany i zapisany na stałe w Twoim Arkuszu Google.")
-        rescue_file = st.file_uploader("Wgraj plik Excel z bazą (Serwisowa posortowana.xlsx):", type=['xlsx'])
-        if rescue_file is not None:
-            try:
-                loaded_rescue = pd.read_excel(rescue_file, sheet_name=0)
-                loaded_rescue = ensure_required_columns(loaded_rescue)
-                st.session_state.df = loaded_rescue
-                sync_excel_file(loaded_rescue)
-                st.success(f"✅ Wgrano {len(loaded_rescue)} rekordów i zsynchronizowano z bazą!")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Błąd wczytywania pliku: {e}")
-
-    # Baner z gotowym SMS-em dla klienta po utworzeniu zlecenia
-    if st.session_state.coord_sms_notification:
-        sms_info = st.session_state.coord_sms_notification
-        st.success(f"✅ Zlecenie **#{sms_info['nr']}** dla klienta **{sms_info['klient']}** zostało zapisane! Wyślij teraz powiadomienie SMS:")
-        col_sms_btn1, col_sms_btn2, col_sms_close = st.columns([2, 2, 1])
-        with col_sms_btn1:
-            if sms_info['tel_clean']:
-                encoded_body = urllib.parse.quote(sms_info['tekst'])
-                st.markdown(
-                    f'<a href="sms:{sms_info["tel_clean"]}?body={encoded_body}" target="_blank" style="text-decoration:none;">'
-                    f'<button style="width:100%; height:48px; border-radius:10px; background:#2b6cb0; color:white; border:none; font-weight:bold; font-size:0.95rem; cursor:pointer;">'
-                    f'📲 1. Wyślij automatycznie (Aplikacja SMS / Telefon)</button></a>',
-                    unsafe_allow_html=True
-                )
-        with col_sms_btn2:
-            st.markdown(
-                f'<a href="https://messages.google.com/web/conversations/new" target="_blank" style="text-decoration:none;">'
-                f'<button style="width:100%; height:48px; border-radius:10px; background:#38a169; color:white; border:none; font-weight:bold; font-size:0.95rem; cursor:pointer;">'
-                f'💬 2. Otwórz Wiadomości Google (Web) na komputerze</button></a>',
-                unsafe_allow_html=True
-            )
-        with col_sms_close:
-            if st.button("✖ Ukryj", use_container_width=True):
-                st.session_state.coord_sms_notification = None
-                st.rerun()
-        st.caption(f"Numer telefonu klienta: **{sms_info['tel_clean']}** — Kliknij ikonę kopiowania w prawym górnym rogu poniższej ramki:")
-        st.code(sms_info['tekst'], language=None)
-        st.markdown("---")
-
-    # Liczniki do zakładek specjalnych
-    is_poczekalnia_open = (
-        df['Poczekalnia'].astype(str).str.lower().isin(['true', '1', 'tak']) &
-        ~df['STATUS ZGŁOSZENIA'].str.lower().str.contains('zakończ|anulow', na=False)
-    )
-    poczekalnia_df = df[is_poczekalnia_open]
-
-    is_zdalne_open = (
-        df['Zdalne'].astype(str).str.lower().isin(['true', '1', 'tak']) &
-        ~df['STATUS ZGŁOSZENIA'].str.lower().str.contains('zakończ|anulow', na=False)
-    )
-    zdalne_open_df = df[is_zdalne_open]
-
-    tab_k1, tab_k_pocz, tab_k_zdalne, tab_k2, tab_k3, tab_k_cennik = st.tabs([
-        "🔍 Baza Klientów & Zgłoszenia",
-        f"⏳ Poczekalnia ({len(poczekalnia_df)})",
-        f"📞 Zgłoszenia Zdalne ({len(zdalne_open_df)})",
-        "📑 Lejek Ofert Handlowych",
-        "🗺️ Planowanie Tras",
-        "💰 Cennik i Historia Cen"
-    ])
-
-    # --- ZAKŁADKA: POCZEKALNIA (UKRYTE PRZED SERWISANTEM) ---
-    with tab_k_pocz:
-        st.subheader("⏳ Poczekalnia (Zgłoszenia wstrzymane — niewidoczne dla serwisantów)")
-        st.caption("Tutaj znajdują się zgłoszenia, w których czekasz np. na dosłanie zdjęć z obiektu, faktury lub decyzję klienta. Po uzupełnieniu danych kliknij 'Zwolnij do serwisu'.")
-
-        if poczekalnia_df.empty:
-            st.success("🎉 Poczekalnia jest pusta! Wszystkie zgłoszenia są przekazane do realizacji.")
-        else:
-            for idx_p, p_row in poczekalnia_df.iterrows():
-                p_nr = p_row.get('nr.', '')
-                p_klient = f"{p_row.get('Imię', '')} {p_row.get('Nazwisko', '')}"
-                p_tel = p_row.get('Numer telefonu', '')
-                p_miasto = f"{p_row.get('Kod pocztowy', '')} {p_row.get('Miejscowość', '')}"
-                p_powod = p_row.get('Powod_poczekalni', 'Czekamy na zdjęcia / dokumenty od klienta')
-
-                with st.expander(f"⏳ Wstrzymane #{p_nr} | {p_klient} (📞 {p_tel}) | Powód: {p_powod}", expanded=True):
-                    c_p1, c_p2 = st.columns(2)
-                    with c_p1:
-                        st.markdown(f"**Klient:** {p_klient} (**📞 {p_tel}**)")
-                        st.markdown(f"**Lokalizacja:** {p_miasto}, {p_row.get('Adres', '')} ({p_row.get('Rejon Polski', '')})")
-                        st.markdown(f"**Zakres / Opis:** {p_row.get('OPIS OD KLIENTA', '')}")
-                    with c_p2:
-                        st.warning(f"📌 **Powód wstrzymania:** {p_powod}")
-                        st.markdown(f"**Wycena:** {p_row.get('Kwota', '0')} zł | **Termin końcowy:** {p_row.get('Termin_koncowy', '—')}")
-
-                    wyswietl_multimedia(p_nr)
-                    nowe_pliki_pocz = st.file_uploader(f"📎 Dosłano zdjęcia/dokumenty? Wgraj je do zlecenia #{p_nr}:", type=['png', 'jpg', 'jpeg', 'webp', 'mp4'], accept_multiple_files=True, key=f"up_pocz_{p_nr}")
-                    if nowe_pliki_pocz:
-                        t_dir = os.path.join(ATTACHMENTS_DIR, str(p_nr))
-                        os.makedirs(t_dir, exist_ok=True)
-                        for f in nowe_pliki_pocz:
-                            with open(os.path.join(t_dir, f.name), "wb") as f_out:
-                                f_out.write(f.getbuffer())
-                        st.success("Załączono nowe pliki!")
-
-                    col_pb1, col_pb2 = st.columns(2)
-                    with col_pb1:
-                        if st.button("🚀 ZWOLNIJ Z POCZEKALNI (Przekaż serwisantowi do realizacji)", key=f"btn_rel_{p_nr}", type="primary", use_container_width=True):
-                            df.at[idx_p, 'Poczekalnia'] = 'False'
-                            df.at[idx_p, 'STATUS ZGŁOSZENIA'] = 'w toku'
-                            st.session_state.df = df
-                            save_ticket_persistently(df.loc[idx_p].to_dict(), current_full_df=st.session_state.df)
-                            st.success(f"Zlecenie #{p_nr} zostało przekazane serwisantowi!")
-                            st.rerun()
-                    with col_pb2:
-                        if st.button("❌ Anuluj zgłoszenie", key=f"btn_canc_pocz_{p_nr}", use_container_width=True):
-                            df.at[idx_p, 'Poczekalnia'] = 'False'
-                            df.at[idx_p, 'STATUS ZGŁOSZENIA'] = 'anulowane'
-                            st.session_state.df = df
-                            save_ticket_persistently(df.loc[idx_p].to_dict(), current_full_df=st.session_state.df)
-                            st.rerun()
-
-    # --- ZAKŁADKA: ZGŁOSZENIA ZDALNE ---
-    with tab_k_zdalne:
-        st.subheader("📞 Zgłoszenia do rozwiązania zdalnie (Helpdesk)")
-        if zdalne_open_df.empty:
-            st.success("🎉 Wszystkie zgłoszenia zdalne zostały rozwiązane!")
-        else:
-            for idx_z, z_row in zdalne_open_df.iterrows():
-                z_nr = z_row.get('nr.', '')
-                z_klient = f"{z_row.get('Imię', '')} {z_row.get('Nazwisko', '')}"
-                z_tel = z_row.get('Numer telefonu', '')
-                with st.expander(f"📞 Zdalne #{z_nr} | {z_klient} (📞 {z_tel}) | Data: {str(z_row.get('DATA ZGŁOSZENIA', ''))[:16]}", expanded=True):
-                    st.markdown(f"**Opis problemu:** {z_row.get('OPIS OD KLIENTA', '')}")
-                    roz_notatka = st.text_input("Jak rozwiązano problem zdalnie:", key=f"zdalne_note_{z_nr}")
-                    col_zb1, col_zb2 = st.columns(2)
-                    with col_zb1:
-                        if st.button("✅ ZAMKNIJ (Rozwiązano zdalnie)", key=f"btn_z_close_{z_nr}", type="primary", use_container_width=True):
-                            df.at[idx_z, 'STATUS ZGŁOSZENIA'] = 'zakończone (zdalnie)'
-                            df.at[idx_z, 'DATA SERWISU'] = datetime.date.today().strftime("%Y-%m-%d")
-                            df.at[idx_z, 'SERWISANT'] = 'Zdalnie (Koordynator)'
-                            df.at[idx_z, 'Komentarz serwisanta'] = roz_notatka.strip() or "Rozwiązano zdalnie przez telefon."
-                            st.session_state.df = df
-                            save_ticket_persistently(df.loc[idx_z].to_dict(), current_full_df=st.session_state.df)
-                            st.rerun()
-                    with col_zb2:
-                        if st.button("🚗 Przekaż do wyjazdu dla serwisanta", key=f"btn_z_to_field_{z_nr}", use_container_width=True):
-                            df.at[idx_z, 'Zdalne'] = 'False'
-                            df.at[idx_z, 'STATUS ZGŁOSZENIA'] = 'w toku'
-                            st.session_state.df = df
-                            save_ticket_persistently(df.loc[idx_z].to_dict(), current_full_df=st.session_state.df)
-                            st.rerun()
-
-    # --- ZAKŁADKA: CENNIK I HISTORIA CEN ---
-    with tab_k_cennik:
-        st.subheader("💰 Zarządzanie Cennikiem Usług i Części")
-        edited_pricelist = st.data_editor(pricelist_df, num_rows="dynamic", use_container_width=True, hide_index=True, key="pricelist_editor_table")
-        if st.button("💾 ZAPISZ ZMIANY W CENNIKU (Z ZACHOWANIEM HISTORII)", type="primary"):
-            now_dt = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-            old_map = {str(r['Nazwa']).strip(): float(r['Cena']) for _, r in pricelist_df.iterrows() if str(r.get('Nazwa', '')).strip()}
-            history_logs = []
-            for _, new_r in edited_pricelist.iterrows():
-                nazwa_p = str(new_r.get('Nazwa', '')).strip()
-                kod_p = str(new_r.get('Kod', '')).strip() or "NOWY"
-                if not nazwa_p:
-                    continue
-                try:
-                    nowa_cena = float(new_r.get('Cena', 0.0))
-                except Exception:
-                    nowa_cena = 0.0
-                if nazwa_p in old_map:
-                    stara_cena = old_map[nazwa_p]
-                    if round(stara_cena, 2) != round(nowa_cena, 2):
-                        history_logs.append({"Data zmiany": now_dt, "Kod": kod_p, "Nazwa pozycji": nazwa_p, "Stara cena (zł)": f"{stara_cena:.2f}", "Nowa cena (zł)": f"{nowa_cena:.2f}", "Zmienił": "Koordynator"})
-                else:
-                    history_logs.append({"Data zmiany": now_dt, "Kod": kod_p, "Nazwa pozycji": nazwa_p, "Stara cena (zł)": "Nowa pozycja", "Nowa cena (zł)": f"{nowa_cena:.2f}", "Zmienił": "Koordynator"})
-            clean_pricelist = edited_pricelist[edited_pricelist['Nazwa'].astype(str).str.strip() != ''].copy()
-            clean_pricelist['Cena'] = pd.to_numeric(clean_pricelist['Cena'], errors='coerce').fillna(0.0)
-            save_pricelist(clean_pricelist)
-            st.session_state.pricelist_df = clean_pricelist
-            if history_logs:
-                append_price_history(history_logs)
-                st.success(f"✅ Zapisano nowy cennik oraz dodano {len(history_logs)} wpis(ów) do historii!")
-            st.rerun()
-        st.markdown("---")
-        st.subheader("📜 Historia zmian cen")
-        st.dataframe(st.session_state.price_history_df, use_container_width=True, hide_index=True)
-
-    # --- ZAKŁADKA: PLANOWANIE TRAS ---
-    with tab_k3:
-        st.subheader("🗺️ Zaplanuj i zatwierdź trasę dla serwisanta")
-        col_tr1, col_tr2 = st.columns(2)
-        with col_tr1:
-            plan_reg_options = [r['kod'] for r in REGION_DEFINITIONS]
-            plan_reg_names = {r['kod']: r['nazwa'] for r in REGION_DEFINITIONS}
-            default_plan_reg = selected_region_code if selected_region_code != "ALL" else "0"
-            wybrany_rejon_trasy = st.selectbox("1. Wybierz rejon:", options=plan_reg_options, index=plan_reg_options.index(default_plan_reg) if default_plan_reg in plan_reg_options else 0, format_func=lambda x: plan_reg_names.get(x, x))
-        with col_tr2:
-            data_planowanej_trasy = st.date_input("2. Data realizacji trasy:", value=datetime.date.today() + datetime.timedelta(days=1))
-
-        mask_plan_reg = df['Rejon Polski'].str.contains(f"Rejon {wybrany_rejon_trasy}", case=False, na=False) | df['Kod pocztowy'].str.startswith(wybrany_rejon_trasy)
-        mask_open_plan = ~df['STATUS ZGŁOSZENIA'].str.lower().str.contains('zakończ|anulow|nowy klient', na=False)
-        mask_not_remote = ~df['Zdalne'].astype(str).str.lower().isin(['true', '1', 'tak'])
-        mask_not_waiting = ~df['Poczekalnia'].astype(str).str.lower().isin(['true', '1', 'tak'])
-        mask_cutoff_plan = df['DATA ZGŁOSZENIA'].str[:10] >= CUTOFF_DATE
-
-        kandydaci_df = df[mask_plan_reg & mask_open_plan & mask_not_remote & mask_not_waiting & mask_cutoff_plan].copy()
-        if kandydaci_df.empty:
-            st.info("Brak gotowych zleceń terenowych w tym rejonie do zaplanowania trasy.")
-        else:
-            route_editor_rows = []
-            for _, r_k in kandydaci_df.iterrows():
-                curr_order = str(r_k.get('Kolejnosc_trasy', '')).strip()
-                is_in_route = str(r_k.get('Trasa_aktywna', '')).lower() in ['true', '1', 'tak']
-                order_num = int(curr_order) if curr_order.isdigit() else 1
-                route_editor_rows.append({
-                    "Włącz do trasy": is_in_route, "Kolejność (1,2,3...)": order_num,
-                    "Nr": str(r_k.get('nr.', '')), "Termin do": str(r_k.get('Termin_koncowy', '')),
-                    "Miejscowość": r_k.get('Miejscowość', ''), "Adres": r_k.get('Adres', ''),
-                    "Klient": f"{r_k.get('Imię', '')} {r_k.get('Nazwisko', '')}",
-                    "Instalacja": str(r_k.get('INSTALACJA', '')).upper(),
-                    "Opis usterki": r_k.get('OPIS OD KLIENTA', '') or r_k.get('OPIS', '')
-                })
-            edited_route = st.data_editor(pd.DataFrame(route_editor_rows), use_container_width=True, hide_index=True, disabled=["Nr", "Termin do", "Miejscowość", "Adres", "Klient", "Instalacja", "Opis usterki"], key=f"route_editor_{wybrany_rejon_trasy}")
-            selected_for_route = edited_route[edited_route["Włącz do trasy"] == True].sort_values(by="Kolejność (1,2,3...)")
-            if not selected_for_route.empty:
-                if st.button("✅ ZATWIERDŹ I OPUBLIKUJ TRASĘ DLA SERWISANTA", type="primary", use_container_width=True):
-                    df.loc[mask_plan_reg, 'Trasa_aktywna'] = 'False'
-                    df.loc[mask_plan_reg, 'Kolejnosc_trasy'] = ''
-                    for final_pos, (_, s_row) in enumerate(selected_for_route.iterrows(), 1):
-                        m_idx = df['nr.'].astype(str) == str(s_row['Nr'])
-                        df.loc[m_idx, 'Trasa_aktywna'] = 'True'
-                        df.loc[m_idx, 'Kolejnosc_trasy'] = str(final_pos)
-                        df.loc[m_idx, 'Data_trasy'] = str(data_planowanej_trasy)
-                    st.session_state.df = df
-                    save_multiple_tickets_persistently(df[mask_plan_reg], current_full_df=st.session_state.df)
-                    st.success("🚀 Trasa wysłana do serwisanta!")
-                    st.rerun()
-
-    # --- ZAKŁADKA: LEJEK OFERTOWY ---
-    with tab_k2:
-        st.subheader("📑 Zgłoszenia wymagające oferty handlowej")
-        oferty_df = df[df['Wymaga oferty'].astype(str).str.lower().isin(['true', '1', 'tak'])]
-        if oferty_df.empty:
-            st.info("Brak zgłoszeń w trakcie ofertowania.")
-        else:
-            for idx, o_row in oferty_df.iterrows():
-                o_nr = o_row['nr.']
-                o_etap = o_row.get('Etap oferty', 'Czeka na ofertę handlowca')
-                o_klient = f"{o_row.get('Imię', '')} {o_row.get('Nazwisko', '')}"
-                with st.expander(f"Zgłoszenie #{o_nr} | Klient: {o_klient} | Status: {o_etap}", expanded=True):
-                    st.markdown(f"**Szczegóły oferty:** {o_row.get('Szczegóły oferty', '') or o_row.get('OPIS OD KLIENTA', '')}")
-                    wyswietl_multimedia(o_nr)
-
-    # --- ZAKŁADKA 1: BAZA KLIENTÓW & DODAWANIE ZGŁOSZEŃ ---
-    with tab_k1:
-        filtered_df = df.copy()
-        if selected_region_code != "ALL":
-            region_mask = df['Rejon Polski'].str.contains(f"Rejon {selected_region_code}", case=False, na=False) | df['Kod pocztowy'].str.startswith(selected_region_code)
-            filtered_df = df[region_mask].copy()
-
-        c_title, c_add_btn = st.columns([3, 1])
-        with c_title:
-            st.subheader("1. Baza Klientów (Wyszukaj lub Dodaj)")
-        with c_add_btn:
-            if st.button("➕ DODAJ NOWEGO KLIENTA", type="primary", use_container_width=True):
-                st.session_state.show_new_client_modal = True
-
-        if st.session_state.show_new_client_modal:
-            with st.form("form_dodaj_klienta"):
-                nc_c1, nc_c2 = st.columns(2)
-                with nc_c1:
-                    nc_imie = st.text_input("Imię:*")
-                    nc_nazwisko = st.text_input("Nazwisko:*")
-                    nc_tel = st.text_input("Numer telefonu:*")
-                    nc_email = st.text_input("E-mail:")
-                with nc_c2:
-                    nc_kod = st.text_input("Kod pocztowy:*")
-                    nc_miasto = st.text_input("Miejscowość:*")
-                    nc_adres = st.text_input("Adres (ulica i nr):*")
-                    all_region_names = [r['nazwa'] for r in REGION_DEFINITIONS]
-                    nc_rejon = st.selectbox("Rejon Polski:", all_region_names)
-                if st.form_submit_button("💾 ZAPISZ KLIENTA W BAZIE", type="primary"):
-                    if nc_nazwisko and nc_tel:
-                        new_client_row = {
-                            "nr.": f"K{get_next_ticket_id()}", "INSTALACJA": "Brak (nowy klient)",
-                            "DATA ZGŁOSZENIA": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-                            "PRZYJMUJĄCY": "Koordynator", "Imię": nc_imie.strip(), "Nazwisko": nc_nazwisko.strip(),
-                            "Numer telefonu": nc_tel.strip(), "E-mail": nc_email.strip(), "Kod pocztowy": nc_kod.strip(),
-                            "Miejscowość": nc_miasto.strip(), "Adres": nc_adres.strip(), "Rejon Polski": nc_rejon,
-                            "STATUS ZGŁOSZENIA": "Nowy klient", "Zdalne": "False", "Poczekalnia": "False",
-                            "Klient_ID": get_clean_client_id({'Numer telefonu': nc_tel, 'Imię': nc_imie, 'Nazwisko': nc_nazwisko})
-                        }
-                        st.session_state.df = ensure_required_columns(pd.concat([pd.DataFrame([new_client_row]), st.session_state.df], ignore_index=True))
-                        save_ticket_persistently(new_client_row, current_full_df=st.session_state.df)
-                        st.session_state.selected_client_id = new_client_row['Klient_ID']
-                        st.session_state.show_new_client_modal = False
-                        st.rerun()
-
-        search_query = st.text_input("Wyszukaj klienta (nazwisko, telefon, miejscowość lub adres):").strip().lower()
-        if search_query:
-            query_mask = (
-                filtered_df['Imię'].str.lower().str.contains(search_query, na=False) |
-                filtered_df['Nazwisko'].str.lower().str.contains(search_query, na=False) |
-                filtered_df['Numer telefonu'].str.lower().str.contains(search_query, na=False) |
-                filtered_df['Miejscowość'].str.lower().str.contains(search_query, na=False) |
-                filtered_df['Adres'].str.lower().str.contains(search_query, na=False)
-            )
-            filtered_df = filtered_df[query_mask]
-
-        clients_unique = filtered_df.drop_duplicates(subset=['Klient_ID']) if not filtered_df.empty else pd.DataFrame()
-        st.write(f"Znaleziono pasujących klientów: **{len(clients_unique)}**")
-
-        if len(clients_unique) > 0:
-            client_choices = [{'ID': r['Klient_ID'], 'Etykieta': f"{r.get('Imię', '')} {r.get('Nazwisko', '')} | 📞 {r.get('Numer telefonu', '')} | 📍 {r.get('Miejscowość', '')}, {r.get('Adres', '')}"} for _, r in clients_unique.iterrows()]
-            current_choice_idx = 0
-            if st.session_state.selected_client_id:
-                for i, c in enumerate(client_choices):
-                    if c['ID'] == st.session_state.selected_client_id:
-                        current_choice_idx = i
-                        break
-            choice_labels = [c['Etykieta'] for c in client_choices]
-            selected_label = st.selectbox("Wybierz klienta z listy:", options=choice_labels, index=current_choice_idx)
-            for c in client_choices:
-                if c['Etykieta'] == selected_label:
-                    st.session_state.selected_client_id = c['ID']
-                    break
-
-        if st.session_state.selected_client_id:
-            client_records = st.session_state.df[st.session_state.df['Klient_ID'] == st.session_state.selected_client_id]
-            if not client_records.empty:
-                first_record = client_records.iloc[0]
-                st.divider()
-                st.subheader(f"👤 Karta Klienta: {first_record.get('Imię', '')} {first_record.get('Nazwisko', '')} (📞 {first_record.get('Numer telefonu', '')})")
-                if st.button("➕ NOWE ZGŁOSZENIE DLA TEGO KLIENTA", type="primary"):
-                    st.session_state.show_new_ticket_modal = not st.session_state.show_new_ticket_modal
-
-                if st.session_state.show_new_ticket_modal:
-                    st.info("📝 Rejestracja nowego zgłoszenia:")
-                    next_id = get_next_ticket_id()
-                    new_ticket_nr_preview = f"N{next_id}"
-
-                    price_options = [f"{r['Nazwa']} ({float(r['Cena']):.0f} zł)" for _, r in pricelist_df.iterrows()]
-                    price_lookup = {f"{r['Nazwa']} ({float(r['Cena']):.0f} zł)": float(r['Cena']) for _, r in pricelist_df.iterrows()}
-
-                    col_p1, col_p2, col_p3 = st.columns([2.5, 1, 1])
-                    with col_p1:
-                        wybrane_pozycje_cennika = st.multiselect("Wybierz pozycje z cennika:", options=price_options)
-                    suma_bazowa = sum([price_lookup.get(item, 0.0) for item in wybrane_pozycje_cennika])
-                    with col_p2:
-                        reczna_korekta = st.number_input("Kwota bazowa (zł):", min_value=0.0, value=float(suma_bazowa), step=50.0)
-                    with col_p3:
-                        rabat_procent = st.number_input("Rabat (%):", min_value=0, max_value=100, value=0, step=5)
-
-                    kwota_po_rabacie = round(reczna_korekta * (1.0 - rabat_procent / 100.0), 2)
-                    st.success(f"💵 **Kwota końcowa dla klienta: {kwota_po_rabacie:.0f} zł** (Rabat: {rabat_procent}%)")
-
-                    f_col1, f_col2 = st.columns(2)
-                    with f_col1:
-                        forma = st.radio("Forma zgłoszenia:", ["telefon", "SMS", "WhatsApp", "e-mail"], horizontal=True)
-                        czy_zdalne = st.checkbox("📞 Zgłoszenie do rozwiązania ZDALNIE (wisi u koordynatora)")
-                        czy_poczekalnia = st.checkbox("⏳ Wstrzymaj w POCZEKALNI (serwisant go nie widzi - np. czekam na zdjęcia)")
-                        powod_pocz = ""
-                        if czy_poczekalnia:
-                            powod_pocz = st.text_input("Powód wstrzymania w poczekalni:", value="Czekam na zdjęcia z obiektu od klienta")
-                    with f_col2:
-                        usterka_dotyczy = st.selectbox("Usterka dotyczy:", ["solar", "foto", "pompa", "magazyn"], index=0)
-                        producent = st.text_input("Producent instalacji:", placeholder="np. Hewalex, Deye, Fronius...")
-                        termin_koncowy = st.date_input("📅 Ostateczny termin realizacji (do SMS):", value=datetime.date.today() + datetime.timedelta(days=7))
-
-                    domyslny_zakres = ", ".join([p.split(" (")[0] for p in wybrane_pozycje_cennika])
-                    opis_zgloszenia = st.text_area("Zakres prac / Opis dla serwisanta (trafia też do SMS):*", value=domyslny_zakres)
-                    komentarz_koordynatora = st.text_area("🔒 Poufna notatka koordynatora (niewidoczna dla serwisanta):")
-                    uploaded_media = st.file_uploader("📷 Załącz zdjęcia/wideo:", type=['png', 'jpg', 'jpeg', 'webp', 'mp4'], accept_multiple_files=True)
-
-                    if st.button("💾 ZAPISZ ZLECENIE I WYGENERUJ SMS", type="primary", use_container_width=True):
-                        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-                        new_ticket_nr = f"N{next_id}"
-                        if czy_poczekalnia:
-                            status_startowy = "W poczekalni (oczekuje)"
-                        elif czy_zdalne:
-                            status_startowy = "Zdalne - do realizacji"
-                        else:
-                            status_startowy = "w toku"
-
-                        if uploaded_media:
-                            target_dir = os.path.join(ATTACHMENTS_DIR, str(new_ticket_nr))
-                            os.makedirs(target_dir, exist_ok=True)
-                            for file in uploaded_media:
-                                with open(os.path.join(target_dir, file.name), "wb") as f_out:
-                                    f_out.write(file.getbuffer())
-
-                        kwota_str = f"{kwota_po_rabacie:.0f}" if kwota_po_rabacie > 0 else "0"
-                        termin_str = termin_koncowy.strftime("%Y-%m-%d")
-
-                        new_row_dict = {
-                            "nr.": new_ticket_nr, "INSTALACJA": usterka_dotyczy, "DATA ZGŁOSZENIA": now_str,
-                            "PRZYJMUJĄCY": "Koordynator", "Imię": first_record.get('Imię', ''),
-                            "Nazwisko": first_record.get('Nazwisko', ''), "Numer telefonu": first_record.get('Numer telefonu', ''),
-                            "E-mail": first_record.get('E-mail', ''), "Kod pocztowy": first_record.get('Kod pocztowy', ''),
-                            "Miejscowość": first_record.get('Miejscowość', ''), "Adres": first_record.get('Adres', ''),
-                            "Rejon Polski": first_record.get('Rejon Polski', ''), "STATUS ZGŁOSZENIA": status_startowy,
-                            "SERWISANT": "Zdalnie (Koordynator)" if czy_zdalne else "",
-                            "OPIS OD KLIENTA": opis_zgloszenia.strip(), "OPIS": "",
-                            "INFORMACJE DODATKOWE": f"Forma: {forma} | Producent: {producent}",
-                            "Kwota": kwota_str, "Płatność ": "", "Ilość przyjazdów": "1",
-                            "Komentarz koordynatora": komentarz_koordynatora.strip(),
-                            "Zdalne": "True" if czy_zdalne else "False",
-                            "Poczekalnia": "True" if czy_poczekalnia else "False",
-                            "Powod_poczekalni": powod_pocz,
-                            "Termin_koncowy": termin_str,
-                            "Pozycje_cennika": "; ".join(wybrane_pozycje_cennika),
-                            "Cena_bazowa": f"{reczna_korekta:.0f}", "Rabat_proc": str(rabat_procent),
-                            "Klient_ID": first_record['Klient_ID']
-                        }
-
-                        st.session_state.df = ensure_required_columns(pd.concat([pd.DataFrame([new_row_dict]), st.session_state.df], ignore_index=True))
-                        save_ticket_persistently(new_row_dict, current_full_df=st.session_state.df)
-
-                        raw_tel = str(first_record.get('Numer telefonu', '')).strip()
-                        clean_tel = "".join([c for c in raw_tel.split(',')[0].split('/')[0] if c.isdigit()])
-                        rabat_txt = f" (po rabacie {rabat_procent}%)" if rabat_procent > 0 else ""
-                        sms_text = (
-                            f"PROMAG SERWIS: Przyjelismy zlecenie nr #{new_ticket_nr}. "
-                            f"Zakres prac: {opis_zgloszenia.strip() or usterka_dotyczy}. "
-                            f"Wycena: {kwota_str} zl{rabat_txt}. "
-                            f"Przewidywany termin realizacji do: {termin_str}. "
-                            f"Jest to termin koncowy, a serwisant bedzie kontaktowal sie z Panstwem rano w dniu wizyty."
-                        )
-                        st.session_state.coord_sms_notification = {
-                            "nr": new_ticket_nr, "klient": f"{first_record.get('Imię', '')} {first_record.get('Nazwisko', '')}",
-                            "tel_clean": clean_tel, "tekst": sms_text
-                        }
-                        st.session_state.show_new_ticket_modal = False
-                        st.rerun()
-
-                st.markdown("### 📋 Historia zleceń tego klienta:")
-                for i, (_, row) in enumerate(client_records.iterrows(), 1):
-                    nr_t = str(row.get('nr.', ''))
-                    with st.expander(f"Zgłoszenie #{nr_t} | Typ: {row.get('INSTALACJA', '')} | Status: {row.get('STATUS ZGŁOSZENIA', '')}", expanded=(i==1)):
-                        st.write(f"**Opis:** {row.get('OPIS OD KLIENTA', '')} | **Kwota:** {row.get('Kwota', '0')} zł | **Termin:** {row.get('Termin_koncowy', '—')}")
-                        wyswietl_multimedia(nr_t)
-
-# =========================================================================
-# 2. MODUŁ SERWISANTA (WIZARD 3-KROKOWY + POMIAR CZASU PRACY I TRASY)
-# =========================================================================
-elif st.session_state.user_role == "serwisant":
-    df = st.session_state.df
-
-    if not st.session_state.tech_pin:
-        if st.button("⬅️ Wróć do wyboru modułu", use_container_width=True):
-            st.session_state.user_role = None
-            st.rerun()
-        st.markdown("<h3 style='text-align: center;'>🔒 Logowanie Serwisanta</h3>", unsafe_allow_html=True)
-        with st.form("form_pin"):
-            pin_input = st.text_input("Wpisz 4-cyfrowy kod PIN:", type="password", max_chars=4)
-            if st.form_submit_button("ZALOGUJ SIĘ", type="primary", use_container_width=True):
-                if pin_input in PIN_CONFIG:
-                    st.session_state.tech_pin = pin_input
-                    st.session_state.tech_main_screen = "otwarte"
-                    st.rerun()
-                else:
-                    st.error("❌ Błędny kod PIN.")
-        st.stop()
-
-    cfg = PIN_CONFIG[st.session_state.tech_pin]
-    rejon_kod = cfg["rejon_kod"]
-    rejon_nazwa = cfg["nazwa_rejonu"]
-    domyslny_tech = cfg["domyslny_serwisant"]
-
-    col_h1, col_h2 = st.columns([3, 1])
-    with col_h1:
-        st.markdown(f"**👷 {domyslny_tech}** | *{rejon_nazwa}*")
-    with col_h2:
-        if st.button("Wyloguj", use_container_width=True):
-            st.session_state.tech_pin = None
-            st.session_state.active_ticket_nr = None
-            st.rerun()
-
-    # EKRANOWY KREATOR ROZLICZENIA (3 KROKI)
-    if st.session_state.active_ticket_nr:
-        curr_rows = df[df['nr.'].astype(str) == str(st.session_state.active_ticket_nr)]
-        if curr_rows.empty:
-            st.session_state.active_ticket_nr = None
-            st.rerun()
-
-        ticket = curr_rows.iloc[0]
-        nr_zlec = str(ticket['nr.'])
-        typ_inst = str(ticket.get('INSTALACJA', 'solar')).lower().strip()
-        if typ_inst not in QUICK_ACTIONS:
-            typ_inst = "solar"
-
-        step = st.session_state.wizard_step
-        w_data = st.session_state.wizard_data
-
-        st.markdown(f'<div class="wizard-step-box">🛠️ Zlecenie #{nr_zlec} ({ticket.get("Imię","")} {ticket.get("Nazwisko","")}) — KROK {step} z 3</div>', unsafe_allow_html=True)
-        st.progress(step / 3.0)
-
-        if step == 1:
-            st.subheader("Krok 1: Co zostało zrobione?")
-            outcome = st.radio("Wynik wizyty:", ["TAK — Usterka usunięta", "NIE — Wymaga ponownego przyjazdu / części"], index=0 if w_data.get("is_success", True) else 1)
-            is_succ = "TAK" in outcome
-            if is_succ:
-                q_act = st.multiselect("⚡ Szybki wybór wykonanych czynności:", options=QUICK_ACTIONS.get(typ_inst, QUICK_ACTIONS["solar"]), default=w_data.get("q_act", []))
-                q_prt = st.multiselect("🔩 Szybki wybór zużytych części:", options=QUICK_PARTS.get(typ_inst, QUICK_PARTS["solar"]), default=w_data.get("q_prt", []))
-                opis_prac = st.text_area("Opis wykonanych prac:*", value=", ".join(q_act) if q_act else w_data.get("opis_prac", ""))
-                zuzyte_czesci = st.text_area("Zużyte części / materiały:", value=", ".join(q_prt) if q_prt else w_data.get("zuzyte_czesci", ""))
-                przyczyna_nieuk, brakujace_mat = "", ""
-            else:
-                q_act = []
-                q_prt = st.multiselect("🔩 Szybki wybór brakujących części:", options=QUICK_PARTS.get(typ_inst, QUICK_PARTS["solar"]), default=w_data.get("q_prt", []))
-                przyczyna_nieuk = st.text_area("Dlaczego nie udało się ukończyć:*", value=w_data.get("przyczyna_nieuk", ""))
-                brakujace_mat = st.text_area("Jakich części brakuje:*", value=", ".join(q_prt) if q_prt else w_data.get("brakujace_mat", ""))
-                opis_prac, zuzyte_czesci = "", ""
-
-            q_rec = st.multiselect("💡 Szybki wybór zaleceń dla klienta:", options=QUICK_RECOMMENDATIONS, default=w_data.get("q_rec", []))
-            zalecenia = st.text_area("Zalecenia dla klienta (OBOWIĄZKOWE):*", value=". ".join(q_rec) if q_rec else w_data.get("zalecenia", ""))
-
-            col_nav1, col_nav2 = st.columns(2)
-            with col_nav1:
-                if st.button("❌ Wróć do listy", use_container_width=True):
-                    st.session_state.active_ticket_nr = None
-                    st.session_state.wizard_step = 1
-                    st.session_state.wizard_data = {}
-                    st.rerun()
-            with col_nav2:
-                if st.button("DALEJ: Zdjęcia ➡️", type="primary", use_container_width=True):
-                    if not zalecenia.strip():
-                        st.error("❌ Wpisz zalecenia dla klienta!")
-                    else:
-                        w_data.update({"is_success": is_succ, "q_act": q_act, "q_prt": q_prt, "q_rec": q_rec, "opis_prac": opis_prac.strip(), "zuzyte_czesci": zuzyte_czesci.strip(), "przyczyna_nieuk": przyczyna_nieuk.strip(), "brakujace_mat": brakujace_mat.strip(), "zalecenia": zalecenia.strip()})
-                        st.session_state.wizard_data = w_data
-                        st.session_state.wizard_step = 2
-                        st.rerun()
-
-        elif step == 2:
-            st.subheader("Krok 2: Zdjęcia i Oferta")
-            potwierdzenie_tabliczek = st.checkbox("✅ POTWIERDZAM: Zrobiłem zdjęcia tabliczek znamionowych", value=w_data.get("potwierdzenie_tabliczek", True))
-            tech_media = st.file_uploader("Wgraj zdjęcia z galerii:", type=['png', 'jpg', 'jpeg', 'webp', 'mp4'], accept_multiple_files=True)
-            camera_photo = st.camera_input("Lub zrób zdjęcie aparatem:")
-
-            target_dir = os.path.join(ATTACHMENTS_DIR, nr_zlec)
-            os.makedirs(target_dir, exist_ok=True)
-            if tech_media:
-                for file in tech_media:
-                    with open(os.path.join(target_dir, file.name), "wb") as f_out:
-                        f_out.write(file.getbuffer())
-            if camera_photo:
-                c_name = f"aparat_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
-                with open(os.path.join(target_dir, c_name), "wb") as f_c:
-                    f_c.write(camera_photo.getbuffer())
-
-            potrzebna_oferta = st.checkbox("💼 Klient prosi o OFERTĘ HANDLOWĄ (rozbudowa/modyfikacja)", value=w_data.get("potrzebna_oferta", False))
-            szczegoly_oferty = st.text_area("Co wycenić dla klienta:*", value=w_data.get("szczegoly_oferty", "")) if potrzebna_oferta else ""
-
-            col_nav1, col_nav2 = st.columns(2)
-            with col_nav1:
-                if st.button("⬅️ WSTECZ", use_container_width=True):
-                    st.session_state.wizard_step = 1
-                    st.rerun()
-            with col_nav2:
-                if st.button("DALEJ: Podpis i Czas ➡️", type="primary", use_container_width=True):
-                    w_data.update({"potwierdzenie_tabliczek": potwierdzenie_tabliczek, "potrzebna_oferta": potrzebna_oferta, "szczegoly_oferty": szczegoly_oferty.strip()})
-                    st.session_state.wizard_data = w_data
-                    st.session_state.wizard_step = 3
-                    st.rerun()
-
-        elif step == 3:
-            st.subheader("Krok 3: Kwota, Czas i Podpis Klienta")
-            wycena_biura = ticket.get('Kwota', '0') or '0'
-            st.info(f"💰 Wycena z biura: **{wycena_biura} zł**")
-
-            # Automatyczne wyliczenie czasu pracy na instalacji (od kliknięcia "Rozpocznij pracę")
-            auto_work_min = 60
-            czas_start_str = str(ticket.get('Czas_start', '')).strip()
-            if czas_start_str:
-                try:
-                    t_start = datetime.datetime.strptime(czas_start_str, "%Y-%m-%d %H:%M")
-                    diff_min = int((datetime.datetime.now() - t_start).total_seconds() // 60)
-                    if 5 <= diff_min <= 720:
-                        auto_work_min = diff_min
-                except Exception:
-                    pass
-
-            c_f1, c_f2 = st.columns(2)
-            with c_f1:
-                kwota_pobrana = st.text_input("Kwota pobrana (zł):", value=str(wycena_biura if w_data.get("is_success", True) else "0"))
-                czas_pracy_min = st.number_input("⏱️ Czas pracy na instalacji (min):", min_value=5, max_value=720, value=auto_work_min, step=15)
-            with c_f2:
-                forma_plat = st.selectbox("Forma płatności:", ["Gotówka", "Przelew", "Gwarancja (0 zł)", "Czeka na przelew"])
-                czas_trasy_min = st.number_input("🚗 Czas dojazdu / w trasie (min):", min_value=0, max_value=480, value=30, step=15)
-
-            status_opcje = ["zakończone", "do ponownego przyjazdu (brak części)", "w toku (wymaga części)", "anulowane"]
-            status_nowy = st.selectbox("Końcowy status zlecenia:", status_opcje, index=0 if w_data.get("is_success", True) else 1)
-
-            st.markdown("##### ✍️ Podpis klienta na ekranie telefonu")
-            if CANVAS_AVAILABLE:
-                canvas_result = st_canvas(fill_color="rgba(255, 255, 255, 1)", stroke_width=3, stroke_color="#1a202c", background_color="#ffffff", height=160, drawing_mode="freedraw", key=f"sig_canvas_{nr_zlec}")
-            else:
-                canvas_result = None
-
-            odbior_klienta = st.checkbox("✅ Klient potwierdził odbiór prac i zalecenia", value=True)
-
-            col_nav1, col_nav2 = st.columns(2)
-            with col_nav1:
-                if st.button("⬅️ WSTECZ", use_container_width=True):
-                    st.session_state.wizard_step = 2
-                    st.rerun()
-            with col_nav2:
-                if st.button("💾 ZAKOŃCZ I ZAPISZ", type="primary", use_container_width=True):
-                    idx = curr_rows.index[0]
-                    is_succ = w_data.get("is_success", True)
-                    df.at[idx, 'Komentarz serwisanta'] = w_data.get("opis_prac", "") if is_succ else w_data.get("przyczyna_nieuk", "")
-                    df.at[idx, 'Zużyte materiały'] = w_data.get("zuzyte_czesci", "") if is_succ else ""
-                    df.at[idx, 'Przyczyna nieukończenia'] = "" if is_succ else w_data.get("przyczyna_nieuk", "")
-                    df.at[idx, 'Brakujące materiały'] = "" if is_succ else w_data.get("brakujace_mat", "")
-                    df.at[idx, 'Zalecenia dla klienta'] = w_data.get("zalecenia", "")
-                    df.at[idx, 'Kwota przyjęta'] = kwota_pobrana
-                    df.at[idx, 'Płatność '] = forma_plat
-                    df.at[idx, 'STATUS ZGŁOSZENIA'] = status_nowy
-                    df.at[idx, 'DATA SERWISU'] = datetime.date.today().strftime("%Y-%m-%d")
-                    df.at[idx, 'Czas_koniec'] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-                    df.at[idx, 'Czas_pracy_min'] = str(czas_pracy_min)
-                    df.at[idx, 'Czas_trasy_min'] = str(czas_trasy_min)
-                    df.at[idx, 'SERWISANT'] = domyslny_tech
-                    df.at[idx, 'Odbior_klienta'] = "Podpisano" if odbior_klienta else "Brak"
-
-                    if CANVAS_AVAILABLE and canvas_result is not None and canvas_result.image_data is not None:
-                        try:
-                            target_dir = os.path.join(ATTACHMENTS_DIR, nr_zlec)
-                            os.makedirs(target_dir, exist_ok=True)
-                            Image.fromarray(canvas_result.image_data.astype('uint8'), 'RGBA').save(os.path.join(target_dir, f"podpis_{nr_zlec}.png"))
-                        except Exception:
-                            pass
-
-                    st.session_state.df = df
-                    save_ticket_persistently(df.loc[idx].to_dict(), current_full_df=st.session_state.df)
-                    st.session_state.active_ticket_nr = None
-                    st.session_state.wizard_step = 1
-                    st.session_state.wizard_data = {}
-                    st.rerun()
-        st.stop()
-
-    # Filtrowanie zleceń dla serwisanta (Pomija Zdalne oraz Poczekalnię!)
-    tech_df = df.copy() if rejon_kod == "ALL" else df[df['Rejon Polski'].str.contains(f"Rejon {rejon_kod}", case=False, na=False) | df['Kod pocztowy'].str.startswith(f"{rejon_kod}")]
-    not_remote_mask = ~tech_df['Zdalne'].astype(str).str.lower().isin(['true', '1', 'tak'])
-    not_waiting_mask = ~tech_df['Poczekalnia'].astype(str).str.lower().isin(['true', '1', 'tak'])
-    tech_operational_df = tech_df[not_remote_mask & not_waiting_mask & (tech_df['DATA ZGŁOSZENIA'].str[:10] >= CUTOFF_DATE)]
-
-    is_done = tech_operational_df['STATUS ZGŁOSZENIA'].str.lower().str.contains('zakończ|anulow|nowy klient', na=False)
-    otwarte_df = tech_operational_df[~is_done].copy()
-    zakonczone_df = tech_operational_df[is_done].copy()
-
-    nav_c1, nav_c2, nav_c3, nav_c4 = st.columns(4)
-    with nav_c1:
-        if st.button(f"⏳ Zlecenia ({len(otwarte_df)})", type="primary" if st.session_state.tech_main_screen == "otwarte" else "secondary", use_container_width=True):
-            st.session_state.tech_main_screen = "otwarte"
-            st.rerun()
-    with nav_c2:
-        if st.button(f"✅ Zrobione ({len(zakonczone_df)})", type="primary" if st.session_state.tech_main_screen == "zakonczone" else "secondary", use_container_width=True):
-            st.session_state.tech_main_screen = "zakonczone"
-            st.rerun()
-    with nav_c3:
-        if st.button("🔍 Szukaj", type="primary" if st.session_state.tech_main_screen == "szukaj" else "secondary", use_container_width=True):
-            st.session_state.tech_main_screen = "szukaj"
-            st.rerun()
-    with nav_c4:
-        if st.button("📘 Błędy", type="primary" if st.session_state.tech_main_screen == "wiedza" else "secondary", use_container_width=True):
-            st.session_state.tech_main_screen = "wiedza"
-            st.rerun()
-
-    st.markdown("---")
-
-    def render_ticket_card(row, is_open=True):
-        nr = str(row.get('nr.', '')).strip()
-        typ = str(row.get('INSTALACJA', '')).lower().strip()
-        imie_nazwisko = f"{row.get('Imię', '')} {row.get('Nazwisko', '')}".strip() or "Brak danych"
-        tel = str(row.get('Numer telefonu', '')).strip()
-        tel_clean = "".join([c for c in tel.split(',')[0].split('/')[0] if c.isdigit()])
-        adres_full = f"{row.get('Kod pocztowy', '')} {row.get('Miejscowość', '')}, {row.get('Adres', '')}".strip(', ')
-        map_query = urllib.parse.quote(f"{row.get('Adres', '')}, {row.get('Miejscowość', '')}")
-        curr_status = str(row.get('STATUS ZGŁOSZENIA', 'w toku')).strip()
-        kwota_val = str(row.get('Kwota', '')).strip() or "0"
-        opis_klienta = str(row.get('OPIS OD KLIENTA', '')).strip() or "Brak opisu"
-        badge_type = "badge-solar" if "solar" in typ else ("badge-foto" if "foto" in typ else ("badge-pompa" if "pompa" in typ else "badge-magazyn"))
-
-        card_html = f'<div class="mobile-card"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;"><span style="font-weight:bold; font-size:1.1rem; color:#1a202c;">#{nr}</span><div><span class="badge {badge_type}">{typ.upper() or "SERWIS"}</span><span class="badge" style="background:#e2e8f0; color:#2d3748;">{curr_status.upper()}</span></div></div><div style="font-size:1.05rem; font-weight:700; color:#2d3748;">👤 {imie_nazwisko}</div><div style="font-size:0.95rem; color:#4a5568; margin-top:3px;">📍 {adres_full}</div><div style="margin-top:8px; padding:8px; background:#edf2f7; border-radius:8px; font-size:0.9rem; color:#2d3748;"><b>Zakres / Usterka:</b> {opis_klienta}</div><div style="display:flex; justify-content:space-between; margin-top:8px; font-size:0.85rem; color:#718096;"><span>💰 Wycena: <b>{kwota_val} zł</b></span><span>⏳ Do: <b>{row.get("Termin_koncowy", "—")}</b></span></div></div>'
-        st.markdown(card_html, unsafe_allow_html=True)
-
-        col_a, col_sms, col_b = st.columns(3)
-        with col_a:
-            if tel_clean:
-                st.markdown(f'<a href="tel:{tel_clean}" target="_blank" style="text-decoration:none;"><button style="width:100%; height:48px; border-radius:10px; background:#2b6cb0; color:white; border:none; font-weight:bold;">📞 Zadzwoń</button></a>', unsafe_allow_html=True)
-        with col_sms:
-            if tel_clean:
-                sms_msg = urllib.parse.quote("Dzień dobry, z tej strony serwis PROMAG. Będę u Państwa dzisiaj zgodnie z planem.")
-                st.markdown(f'<a href="sms:{tel_clean}?body={sms_msg}" target="_blank" style="text-decoration:none;"><button style="width:100%; height:48px; border-radius:10px; background:#805ad5; color:white; border:none; font-weight:bold;">💬 SMS</button></a>', unsafe_allow_html=True)
-        with col_b:
-            if row.get('Miejscowość', ''):
-                st.markdown(f'<a href="https://www.google.com/maps/search/?api=1&query={map_query}" target="_blank" style="text-decoration:none;"><button style="width:100%; height:48px; border-radius:10px; background:#38a169; color:white; border:none; font-weight:bold;">🗺️ Nawiguj</button></a>', unsafe_allow_html=True)
-
-        if is_open:
-            btn_col1, btn_col2 = st.columns(2)
-            with btn_col1:
-                if curr_status.lower() in ['w trakcie realizacji', 'rozpoczęte']:
-                    st.button(f"⚙️ W TRAKCIE (od {str(row.get('Czas_start',''))[-5:]})", key=f"btn_started_{nr}", disabled=True, use_container_width=True)
-                else:
-                    if st.button("▶️ Rozpocznij pracę", key=f"btn_start_{nr}", use_container_width=True):
-                        match_idx = df[df['nr.'].astype(str) == nr].index
-                        if not match_idx.empty:
-                            df.at[match_idx[0], 'STATUS ZGŁOSZENIA'] = 'w trakcie realizacji'
-                            df.at[match_idx[0], 'SERWISANT'] = domyslny_tech
-                            df.at[match_idx[0], 'Czas_start'] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-                            st.session_state.df = df
-                            save_ticket_persistently(df.loc[match_idx[0]].to_dict(), current_full_df=st.session_state.df)
-                            st.rerun()
-            with btn_col2:
-                if st.button("✅ Rozlicz (3 kroki)", key=f"btn_close_{nr}", type="primary", use_container_width=True):
-                    st.session_state.active_ticket_nr = nr
-                    st.session_state.wizard_step = 1
-                    st.session_state.wizard_data = {}
-                    st.rerun()
-        st.write("")
-
-    if st.session_state.tech_main_screen == "otwarte":
-        if otwarte_df.empty:
-            st.info("🎉 Brak otwartych zleceń w Twoim rejonie!")
-        else:
-            for _, row in otwarte_df.head(30).iterrows():
-                render_ticket_card(row, is_open=True)
-    elif st.session_state.tech_main_screen == "zakonczone":
-        for _, row in zakonczone_df.head(20).iterrows():
-            render_ticket_card(row, is_open=False)
-    elif st.session_state.tech_main_screen == "szukaj":
-        tech_search = st.text_input("Wpisz nazwisko, telefon lub miejscowość:").strip().lower()
-        if tech_search:
-            t_match = df[df['Nazwisko'].str.lower().str.contains(tech_search, na=False) | df['Numer telefonu'].str.lower().str.contains(tech_search, na=False) | df['Miejscowość'].str.lower().str.contains(tech_search, na=False)]
-            for _, h_row in t_match.head(15).iterrows():
-                render_ticket_card(h_row, is_open=False)
-    elif st.session_state.tech_main_screen == "wiedza":
-        st.subheader("📘 Ściągawka Techniczna & Kody Błędów")
-        st.info("☀️ **SOLARY:** Ciśnienie zimne 1.5–2.0 bar | PT1000 w 20°C = 1078 Ω.\n\n❄️ **POMPY CIEPŁA:** E03/E04 = wyczyść filtr siatkowy/magnetyczny.\n\n⚡ **FOTOWOLTAIKA:** Deye F18 = sprawdź zwarcie AC; F56 = doładuj baterię z sieci.")
-
-# =========================================================================
-# 3. PANEL ZARZĄDU (ANALITYKA SERWISANTÓW, BIEŻĄCE ZLECENIA I ARCHIWUM)
-# =========================================================================
-elif st.session_state.user_role == "zarzad":
-    df = st.session_state.df
-
-    if not st.session_state.board_authenticated:
-        if st.button("⬅️ Wróć do wyboru modułu"):
-            st.session_state.user_role = None
-            st.rerun()
-        st.markdown("<h3 style='text-align: center;'>📊 Autoryzacja Panelu Zarządu</h3>", unsafe_allow_html=True)
-        with st.form("board_auth_form"):
-            b_pin = st.text_input("Wprowadź kod PIN Zarządu (domyślnie: 0000):", type="password")
-            if st.form_submit_button("WEJDŹ DO PANELU ZARZĄDU", type="primary", use_container_width=True):
-                if b_pin in ["0000", "9999"]:
-                    st.session_state.board_authenticated = True
-                    st.rerun()
-                else:
-                    st.error("❌ Nieprawidłowy kod PIN.")
-        st.stop()
-
-    col_b_top1, col_b_top2 = st.columns([4, 1])
-    with col_b_top1:
-        st.title("📊 Panel Zarządu — Analityka i Nadzór Serwisu")
-    with col_b_top2:
-        if st.button("🚪 Wyloguj", use_container_width=True):
-            st.session_state.board_authenticated = False
-            st.session_state.user_role = None
-            st.rerun()
-
-    tab_z1, tab_z2, tab_z3 = st.tabs([
-        "👷 Wyniki Serwisantów (Zyski i Czas)",
-        f"⚡ Bieżące Zlecenia (od {CUTOFF_DATE})",
-        f"🗄️ Pełne Archiwum (przed {CUTOFF_DATE})"
-    ])
-
-    active_df = df[df['DATA ZGŁOSZENIA'].str[:10] >= CUTOFF_DATE].copy()
-    archive_df = df[df['DATA ZGŁOSZENIA'].str[:10] < CUTOFF_DATE].copy()
-
-    # --- ZAKŁADKA 1: ROZLICZENIE SERWISANTÓW ---
-    with tab_z1:
-        st.subheader("📈 Zestawienie efektywności, czasu pracy i zysków na serwisanta")
-        lista_serwisantow = ["Leszek", "Stanisław", "Wojtek", "Mikołaj", "Artur", "Piotr", "Alex", "Dominik", "Hubert", "Piasta", "Zdalnie (Koordynator)"]
-
-        stat_rows = []
-        for tech_name in lista_serwisantow:
-            # Przypisane bezpośrednio lub wynikające z domyślnego rejonu serwisanta
-            tech_pins = [cfg['rejon_kod'] for _, cfg in PIN_CONFIG.items() if cfg['domyslny_serwisant'].lower() == tech_name.lower()]
-            if tech_pins and tech_pins[0] != "ALL":
-                r_code = tech_pins[0]
-                mask_t = (active_df['SERWISANT'].str.lower() == tech_name.lower()) | (
-                    (active_df['SERWISANT'] == '') & (active_df['Rejon Polski'].str.contains(f"Rejon {r_code}", case=False, na=False) | active_df['Kod pocztowy'].str.startswith(r_code))
-                )
-            else:
-                mask_t = active_df['SERWISANT'].str.lower() == tech_name.lower()
-
-            t_records = active_df[mask_t & ~active_df['STATUS ZGŁOSZENIA'].str.lower().str.contains('nowy klient|anulow', na=False)]
-            done_mask = t_records['STATUS ZGŁOSZENIA'].str.lower().str.contains('zakończ', na=False)
-            w_trakcie_cnt = (~done_mask).sum()
-            zrealizowane_cnt = done_mask.sum()
-
-            # Liczenie zysków z zamkniętych zleceń
-            done_records = t_records[done_mask]
-            zysk_suma = 0.0
-            czas_pracy_suma_min = 0
-            czas_trasy_suma_min = 0
-
-            for _, r_done in done_records.iterrows():
-                kw_str = str(r_done.get('Kwota przyjęta', '') or r_done.get('Kwota', '0')).replace('zł', '').replace(' ', '').replace(',', '.').strip()
-                try:
-                    zysk_suma += float(kw_str)
-                except Exception:
-                    pass
-                try:
-                    czas_pracy_suma_min += int(float(str(r_done.get('Czas_pracy_min', '0') or '0')))
-                except Exception:
-                    pass
-                try:
-                    czas_trasy_suma_min += int(float(str(r_done.get('Czas_trasy_min', '0') or '0')))
-                except Exception:
-                    pass
-
-            stat_rows.append({
-                "Serwisant": tech_name,
-                "Zlecenia w trakcie": int(w_trakcie_cnt),
-                "Zlecenia zrealizowane": int(zrealizowane_cnt),
-                "Podsumowanie zysków (zł)": round(zysk_suma, 2),
-                "Czas pracy na instalacjach": f"{czas_pracy_suma_min // 60}h {czas_pracy_suma_min % 60}m ({czas_pracy_suma_min} min)",
-                "Czas w trasie": f"{czas_trasy_suma_min // 60}h {czas_trasy_suma_min % 60}m ({czas_trasy_suma_min} min)"
+    # Sortujemy tak, aby zgłoszenia krytyczne oraz wysoko płatne były nasionami klastrów
+    pending = pending.sort_values(by=["is_crit", "Kwota_Przewidywana"], ascending=[False, False])
+    used_indices = set()
+    valid_clusters = []
+
+    for idx, seed in pending.iterrows():
+        if idx in used_indices:
+            continue
+        cluster_indices = [idx]
+        for cand_idx, cand in pending.iterrows():
+            if cand_idx == idx or cand_idx in used_indices:
+                continue
+            if len(cluster_indices) >= 4:
+                break
+            dist = haversine_km(seed["lat"], seed["lon"], cand["lat"], cand["lon"])
+            if dist <= 50.0:
+                cluster_indices.append(cand_idx)
+
+        cluster_df = pending.loc[cluster_indices]
+        total_rev = cluster_df["Kwota_Przewidywana"].sum()
+        crit_count = cluster_df["is_crit"].sum()
+
+        # Kryterium biznesowe: min. 1200 zł przewidywanego przychodu LUB min. 2 zgłoszenia krytyczne
+        if total_rev >= 1200.0 or crit_count >= 2:
+            for c_i in cluster_indices:
+                used_indices.add(c_i)
+            valid_clusters.append({
+                "indices": cluster_indices,
+                "total_rev": total_rev,
+                "crit_count": int(crit_count),
+                "miasta": ", ".join(cluster_df["Miasto"].astype(str).unique()),
+                "count": len(cluster_indices)
             })
 
-        stats_df = pd.DataFrame(stat_rows)
-        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-        col_m1.metric("Łącznie w trakcie", int(stats_df["Zlecenia w trakcie"].sum()))
-        col_m2.metric("Łącznie zrealizowane", int(stats_df["Zlecenia zrealizowane"].sum()))
-        col_m3.metric("Suma zysków (od 08.10)", f"{stats_df['Podsumowanie zysków (zł)'].sum():,.2f} zł")
-        col_m4.metric("Zgłoszenia w poczekalni", int((active_df['Poczekalnia'].astype(str).str.lower() == 'true').sum()))
+    if not valid_clusters:
+        return [], "Żaden z klastrów nie spełnił warunku minimum 1200 zł lub min. 2 zgłoszeń krytycznych w promieniu 50 km."
 
-        st.dataframe(stats_df, use_container_width=True, hide_index=True)
+    # Przypisywanie klastrów do dostępnych serwisantów na kolejne dni robocze
+    tech_names = list(profiles.keys())
+    proposals = []
+    cluster_ptr = 0
 
-    # --- ZAKŁADKA 2: BIEŻĄCE ZLECENIA ---
-    with tab_z2:
-        st.subheader(f"📋 Wszystkie bieżące zlecenia serwisowe (od {CUTOFF_DATE})")
-        st.dataframe(active_df.drop(columns=['Klient_ID'], errors='ignore'), use_container_width=True, hide_index=True)
+    for d_offset in range(days_ahead):
+        curr_date = start_date + datetime.timedelta(days=d_offset)
+        curr_date_str = str(curr_date)
+        for t_name in tech_names:
+            if cluster_ptr >= len(valid_clusters):
+                break
+            if is_tech_available(t_name, curr_date_str, profiles):
+                cl = valid_clusters[cluster_ptr]
+                cl["serwisant"] = t_name
+                cl["data"] = curr_date_str
+                proposals.append(cl)
+                cluster_ptr += 1
 
-    # --- ZAKŁADKA 3: PEŁNE ARCHIWUM ---
-    with tab_z3:
-        st.subheader(f"🗄️ Archiwum zleceń (przed {CUTOFF_DATE} — łącznie {len(archive_df)} rekordów)")
-        arch_q = st.text_input("Przeszukaj archiwum (nazwisko, miejscowość, telefon, serwisant):").strip().lower()
-        view_arch = archive_df
-        if arch_q:
-            view_arch = archive_df[
-                archive_df['Nazwisko'].str.lower().str.contains(arch_q, na=False) |
-                archive_df['Miejscowość'].str.lower().str.contains(arch_q, na=False) |
-                archive_df['Numer telefonu'].str.lower().str.contains(arch_q, na=False) |
-                archive_df['SERWISANT'].str.lower().str.contains(arch_q, na=False)
-            ]
-        st.dataframe(view_arch.drop(columns=['Klient_ID'], errors='ignore'), use_container_width=True, hide_index=True)
+    return proposals, f"Wygenerowano {len(proposals)} opłacalnych tras (klastrów <=50 km)."
+
+# ==========================================
+# 6. OBLICZANIE WYNIKÓW I PROWIZJI SERWISANTA
+# ==========================================
+def calculate_tech_metrics(df, tech_name):
+    tech_df = df[df["Serwisant"] == tech_name]
+    closed_df = tech_df[tech_df["Status"] == "Zakończone"].copy()
+
+    total_closed = len(closed_df)
+    if total_closed > 0:
+        ftfr_count = len(closed_df[closed_df["Naprawione_1_Wizyta"] == "Tak"])
+        ftfr_pct = round((ftfr_count / total_closed) * 100.0, 1)
+    else:
+        ftfr_pct = 100.0
+
+    paid_count = len(closed_df[closed_df["Typ_Serwisu"] == "Płatny"])
+    warranty_count = len(closed_df[closed_df["Typ_Serwisu"] == "Gwarancyjny"])
+
+    # Przychód z bieżącego miesiąca (lub łącznie ze zamkniętych zleceń)
+    current_ym = datetime.date.today().strftime("%Y-%m")
+    closed_df["ym"] = closed_df["Data_Zamkniecia"].astype(str).str.slice(0, 7)
+    monthly_df = closed_df[(closed_df["ym"] == current_ym) | (closed_df["ym"] == "")]
+    monthly_revenue = monthly_df["Kwota_Koncowa"].sum()
+
+    # Wyliczenie progów: 15 000 zł -> 3%, 30 000 zł -> 4%
+    missing_tier_1 = max(0.0, COMMISSION_TIER_1 - monthly_revenue)
+    missing_tier_2 = max(0.0, COMMISSION_TIER_2 - monthly_revenue)
+
+    if monthly_revenue >= COMMISSION_TIER_2:
+        commission_pln = monthly_revenue * COMMISSION_RATE_2
+        active_rate_str = "4% (Próg II zdobyty!)"
+    elif monthly_revenue >= COMMISSION_TIER_1:
+        commission_pln = monthly_revenue * COMMISSION_RATE_1
+        active_rate_str = "3% (Próg I zdobyty!)"
+    else:
+        commission_pln = 0.0
+        active_rate_str = "0% (W drodze do Progu I)"
+
+    return {
+        "total_closed": total_closed,
+        "ftfr_pct": ftfr_pct,
+        "paid_count": paid_count,
+        "warranty_count": warranty_count,
+        "monthly_revenue": monthly_revenue,
+        "missing_tier_1": missing_tier_1,
+        "missing_tier_2": missing_tier_2,
+        "commission_pln": commission_pln,
+        "active_rate_str": active_rate_str
+    }
+
+# ==========================================
+# 7. INICJALIZACJA STANU SESJI
+# ==========================================
+if "profiles" not in st.session_state or "logo_b64" not in st.session_state:
+    p_loaded, l_loaded = load_config_and_profiles()
+    st.session_state["profiles"] = p_loaded
+    st.session_state["logo_b64"] = l_loaded
+
+if "df_tickets" not in st.session_state:
+    st.session_state["df_tickets"] = load_tickets()
+
+if "logged_role" not in st.session_state:
+    st.session_state["logged_role"] = None
+if "logged_user" not in st.session_state:
+    st.session_state["logged_user"] = None
+
+# ==========================================
+# 8. EKRAN GŁÓWNY LOGOWANIA + SZKOLENIE WSTĘPNE
+# ==========================================
+if st.session_state["logged_role"] is None:
+    render_brand_logo(max_width=280, centered=True)
+    st.markdown("<p style='text-align:center; color:#64748b; margin-top:-5px;'>Mobilny System Zarządzania Serwisem OZE (Telefon / Tablet)</p>", unsafe_allow_html=True)
+    st.divider()
+
+    col_login, col_onboard = st.columns([1.2, 1])
+
+    with col_login:
+        st.subheader("🔐 Logowanie do systemu")
+        tech_list = list(st.session_state["profiles"].keys())
+        user_choice = st.selectbox(
+            "Wybierz swój profil:",
+            ["--- Wybierz z listy ---"] + tech_list + ["Koordynator Serwisu", "Zarząd (Raporty)"]
+        )
+        pin_input = st.text_input("Wpisz 4-cyfrowy kod PIN:", type="password", max_chars=8)
+
+        if st.button("🚀 Zaloguj się", type="primary"):
+            if user_choice == "--- Wybierz z listy ---":
+                st.error("Wybierz swój profil z listy powyżej.")
+            elif user_choice == "Koordynator Serwisu":
+                if pin_input == PIN_KOORDYNATOR:
+                    st.session_state["logged_role"] = "koordynator"
+                    st.session_state["logged_user"] = "Koordynator"
+                    st.rerun()
+                else:
+                    st.error("Nieprawidłowy kod PIN Koordynatora.")
+            elif user_choice == "Zarząd (Raporty)":
+                if pin_input == PIN_ZARZAD:
+                    st.session_state["logged_role"] = "zarzad"
+                    st.session_state["logged_user"] = "Zarząd"
+                    st.rerun()
+                else:
+                    st.error("Nieprawidłowy kod PIN Zarządu.")
+            elif user_choice in st.session_state["profiles"]:
+                expected_pin = str(st.session_state["profiles"][user_choice].get("pin", ""))
+                if pin_input == expected_pin:
+                    st.session_state["logged_role"] = "serwisant"
+                    st.session_state["logged_user"] = user_choice
+                    st.rerun()
+                else:
+                    st.error("Nieprawidłowy kod PIN serwisanta.")
+
+    with col_onboard:
+        st.subheader("🎓 Dla nowych pracowników")
+        st.info("Rozpoczynasz pracę w naszym zespole serwisowym? Zapoznaj się z procedurami bezpieczeństwa i standardem obsługi klienta.")
+        if st.button("📘 Otwórz Szkolenie Wstępne (Onboarding)"):
+            st.session_state["show_onboarding"] = not st.session_state.get("show_onboarding", False)
+
+        if st.session_state.get("show_onboarding", False):
+            with st.container(border=True):
+                st.markdown("### Moduł Szkolenia Wstępnego")
+                st.markdown("""
+                1. **Standard wizyty serwisowej** – weryfikacja układu, dokumentacja zdjęciowa przed i po, kultura pracy.
+                2. **Procedury BHP przy OZE** – bezpieczne odłączanie strony DC/AC w instalacjach PV oraz praca z czynnikiem chłodniczym w pompach ciepła.
+                3. **Obsługa aplikacji mobilnej** – każde zlecenie kończymy czytelnymi zaleceniami oraz podpisem klienta na ekranie tabletu/telefonu.
+                
+                *(Szczegółowe materiały wideo oraz testy wdrożeniowe zostaną opublikowane w tym module w kolejnym etapie).*
+                """)
+
+    st.stop()
+
+# Pasek górny po zalogowaniu
+top_c1, top_c2, top_c3 = st.columns([2, 2, 1])
+with top_c1:
+    render_brand_logo(max_width=200, centered=False)
+with top_c2:
+    st.markdown(f"**Zalogowany jako:** `{st.session_state['logged_user']}`")
+with top_c3:
+    if st.button("🚪 Wyloguj"):
+        st.session_state["logged_role"] = None
+        st.session_state["logged_user"] = None
+        st.rerun()
+
+st.divider()
+
+# ==========================================
+# 9. PANEL SERWISANTA (TELEFON + TABLET, MOTYWATOR PROWIZYJNY, BAZA WIEDZY, PROTOKÓŁ Z LOGO)
+# ==========================================
+if st.session_state["logged_role"] == "serwisant":
+    tech_name = st.session_state["logged_user"]
+    df = st.session_state["df_tickets"]
+    metrics = calculate_tech_metrics(df, tech_name)
+
+    # --- PASEK MOTYWACYJNY NA GÓRZE EKRANU SERWISANTA ---
+    m_col1, m_col2, m_col3 = st.columns([1.4, 1.4, 1])
+    with m_col1:
+        if metrics["missing_tier_1"] > 0:
+            headline = f"Brakuje: {metrics['missing_tier_1']:,.0f} zł do prowizji 3%"
+            subline = f"Próg I (15 000 zł) | Do progu 4% (30 000 zł) brakuje: {metrics['missing_tier_2']:,.0f} zł"
+        elif metrics["missing_tier_2"] > 0:
+            headline = f"🔥 Masz już 3%! Brakuje: {metrics['missing_tier_2']:,.0f} zł do 4%"
+            subline = f"Wypracowany obrót: {metrics['monthly_revenue']:,.0f} zł (Premia: {metrics['commission_pln']:,.0f} zł)"
+        else:
+            headline = f"🏆 Maksymalny próg 4% zdobyty!"
+            subline = f"Wypracowany obrót: {metrics['monthly_revenue']:,.0f} zł (Premia: {metrics['commission_pln']:,.0f} zł)"
+
+        st.markdown(f"""
+        <div class="kpi-card">
+            <div class="kpi-title">🎯 Twój Cel Prowizyjny (Bieżący Miesiąc)</div>
+            <div class="kpi-value">{headline}</div>
+            <div class="kpi-sub">{subline}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with m_col2:
+        st.markdown(f"""
+        <div class="kpi-card kpi-card-warn">
+            <div class="kpi-title">⚡ Skuteczność 1. Wizyty (First-Time Fix)</div>
+            <div class="kpi-value">{metrics['ftfr_pct']}% naprawionych od ręki</div>
+            <div class="kpi-sub">Obsłużone: {metrics['total_closed']} (Płatne: {metrics['paid_count']} | Gwarancyjne: {metrics['warranty_count']})</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with m_col3:
+        st.write("")
+        if st.button("📚 BAZA WIEDZY (Schematy / Kody błędów)"):
+            st.session_state["show_kb"] = not st.session_state.get("show_kb", False)
+
+    # Pasek postępu do 30 000 zł
+    progress_val = min(1.0, float(metrics["monthly_revenue"] / COMMISSION_TIER_2))
+    st.progress(progress_val, text=f"Postęp obrotu w tym miesiącu: {metrics['monthly_revenue']:,.0f} zł / 30 000 zł ({metrics['active_rate_str']})")
+
+    if st.session_state.get("show_kb", False):
+        with st.expander("📚 Moduł Bazy Wiedzy Technicznej OZE", expanded=True):
+            st.info("W tym miejscu pojawią się kody błędów falowników i pomp ciepła, instrukcje serwisowe oraz listy kontrolne przeglądów (moduł w przygotowaniu).")
+
+    st.divider()
+
+    # --- LISTA ZLECEŃ SERWISANTA (BEZ REJONIZACJI) ---
+    my_tickets = df[(df["Serwisant"] == tech_name) & (df["Status"] != "Zakończone")].copy()
+
+    st.subheader(f"📋 Twoje aktywne zlecenia ({len(my_tickets)})")
+    if my_tickets.empty:
+        st.success("Brak otwartych zleceń przypisanych do Twojego konta.")
+    else:
+        ticket_options = [
+            f"{row['ID_Zgloszenia']} | {row['Miasto']} ({row['Adres']}) - {row['Klient']} [{'🔥 KRYTYCZNE' if row['Priorytet_Krytyczny']=='Tak' else row['Typ_Serwisu']}]"
+            for _, row in my_tickets.iterrows()
+        ]
+        selected_option = st.selectbox("Wybierz zlecenie do obsługi:", ticket_options)
+        selected_id = selected_option.split(" | ")[0]
+        t_idx = df[df["ID_Zgloszenia"] == selected_id].index[0]
+        t_row = df.loc[t_idx]
+
+        # Karta informacyjna zlecenia (wygodny układ 2-kolumnowy na tablecie, 1-kolumnowy na telefonie)
+        c_info1, c_info2 = st.columns([1.2, 1])
+        with c_info1:
+            st.markdown(f"### 👤 Klient: **{t_row['Klient']}**")
+            st.markdown(f"📍 **Adres:** `{t_row['Kod_Pocztowy']} {t_row['Miasto']}, {t_row['Adres']}`")
+            st.markdown(f"📞 **Telefon:** [{t_row['Telefon']}](tel:{t_row['Telefon']})")
+            st.markdown(f"🔧 **Instalacja:** {t_row['Typ_Instalacji']} | **Typ:** `{t_row['Typ_Serwisu']}`")
+            st.markdown(f"📝 **Opis zgłoszenia:** {t_row['Opis_Zgloszenia']}")
+
+        with c_info2:
+            maps_query = f"{t_row['Adres']} {t_row['Kod_Pocztowy']} {t_row['Miasto']}".replace(" ", "+")
+            st.link_button("🗺️ Nawiguj w Google Maps", f"https://www.google.com/maps/search/?api=1&query={maps_query}")
+            sms_body = f"Dzien dobry, tu serwis OZE. Przypominamy o zaplanowanej wizycie serwisowej pod adresem {t_row['Adres']}."
+            st.link_button("💬 Wyślij SMS do klienta", f"sms:{t_row['Telefon']}?body={sms_body.replace(' ', '%20')}")
+
+        st.divider()
+
+        # --- KALKULATOR CENY I CZASU PRACY ---
+        st.subheader("🛠️ Realizacja wizyty i rozliczenie")
+        calc_c1, calc_c2 = st.columns(2)
+        with calc_c1:
+            selected_services = st.multiselect(
+                "Wykonane czynności z cennika:",
+                options=list(CENNIK_BAZOWY.keys()),
+                default=[]
+            )
+            extra_parts = st.number_input("Koszt użytych części / materiałów (zł):", min_value=0.0, step=50.0, value=0.0)
+            km_dojazd = st.number_input("Dojazd (km w obie strony powyżej ryczałtu):", min_value=0, step=10, value=0)
+
+        with calc_c2:
+            work_minutes = st.number_input("Czas pracy na miejscu (minuty):", min_value=15, step=15, value=int(t_row["Czas_Pracy_Min"]) if t_row["Czas_Pracy_Min"] > 0 else 60)
+            typ_serwisu_real = st.selectbox("Kwalifikacja zlecenia:", ["Płatny", "Gwarancyjny"], index=0 if t_row["Typ_Serwisu"] != "Gwarancyjny" else 1)
+            fixed_first_visit = st.radio(
+                "Czy usterka / zgłoszenie zostało w pełni rozwiązane podczas tej wizyty?",
+                ["Tak", "Nie (Wymagana kolejna wizyta / zamówienie części)"],
+                horizontal=True
+            )
+
+        base_sum = sum(CENNIK_BAZOWY[s] for s in selected_services)
+        if base_sum == 0 and typ_serwisu_real == "Płatny":
+            base_sum = float(t_row["Kwota_Przewidywana"])
+        auto_total = 0.0 if typ_serwisu_real == "Gwarancyjny" else (base_sum + extra_parts + (km_dojazd * 2.5))
+
+        final_price = st.number_input("💰 Kwota końcowa do rozliczenia (zł brutto):", min_value=0.0, step=50.0, value=float(auto_total))
+        internal_note = st.text_area("Notatka wewnętrzna dla Koordynatora (niewidoczna dla klienta):", value=str(t_row["Notatka_Serwisanta"]))
+
+        # --- SEKCJA WIDOCZNA DLA KLIENTA (Z BRANDINGIEM / LOGO FIRMY) ---
+        st.markdown('<div class="client-box">', unsafe_allow_html=True)
+        render_brand_logo(max_width=220, centered=False)
+        st.markdown("### 📄 Protokół Odbioru Serwisu i Zalecenia dla Klienta")
+        st.markdown(f"**Klient:** {t_row['Klient']} | **Adres:** {t_row['Kod_Pocztowy']} {t_row['Miasto']}, {t_row['Adres']} | **Data:** {datetime.date.today()}")
+        client_recommendations = st.text_area(
+            "Zalecenia po-serwisowe dla Klienta (widoczne na protokole):",
+            value=str(t_row["Zalecenia_Klienta"]),
+            placeholder="Wpisz zalecenia dotyczące eksploatacji instalacji, ciśnienia w układzie lub terminu kolejnego przeglądu..."
+        )
+        st.markdown(f"#### Do zapłaty / Rozliczenie: **{final_price:,.2f} zł** ({typ_serwisu_real})")
+        st.markdown("**Podpis Klienta (potwierdzenie wykonania prac i zapoznania się z zaleceniami):**")
+
+        canvas_result = st_canvas(
+            fill_color="rgba(255, 255, 255, 0)",
+            stroke_width=3,
+            stroke_color="#0f172a",
+            background_color="#ffffff",
+            height=180,
+            width=620,
+            drawing_mode="freedraw",
+            key=f"canvas_{selected_id}"
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        if st.button("✅ ZAKOŃCZ ZLECENIE I ZAPISZ PROTOKÓŁ", type="primary"):
+            df.loc[t_idx, "Status"] = "Zakończone"
+            df.loc[t_idx, "Typ_Serwisu"] = typ_serwisu_real
+            df.loc[t_idx, "Naprawione_1_Wizyta"] = "Tak" if fixed_first_visit.startswith("Tak") else "Nie"
+            df.loc[t_idx, "Kwota_Koncowa"] = final_price
+            df.loc[t_idx, "Czas_Pracy_Min"] = work_minutes
+            df.loc[t_idx, "Zalecenia_Klienta"] = client_recommendations
+            df.loc[t_idx, "Notatka_Serwisanta"] = internal_note
+            df.loc[t_idx, "Data_Zamkniecia"] = str(datetime.date.today())
+            df.loc[t_idx, "Podpis_Zlozony"] = "Tak" if (canvas_result.image_data is not None) else "Nie"
+
+            save_tickets(df)
+            st.success("Zlecenie zostało zamknięte, a Twoje statystyki prowizyjne zaktualizowane!")
+            st.rerun()
+
+# ==========================================
+# 10. PANEL KOORDYNATORA (AUTO-PLANER TRAS, PROFILOWANIE KADRY, ZLECENIA, BRANDING)
+# ==========================================
+elif st.session_state["logged_role"] == "koordynator":
+    df = st.session_state["df_tickets"]
+    profiles = st.session_state["profiles"]
+
+    tab_plan, tab_kadry, tab_zlecenia, tab_brand = st.tabs([
+        "🗺️ Harmonogram i Auto-Planer Tras",
+        "👷 Profilowanie Serwisantów (Kadry i Wyniki)",
+        "📋 Baza Zgłoszeń i Dodawanie",
+        "🎨 Branding (Logo) i Plik Excel"
+    ])
+
+    # --- ZAKŁADKA 1: INTELIGENTNE PLANOWANIE TRAS ---
+    with tab_plan:
+        st.subheader("🗺️ Inteligentne Planowanie Wyjazdów (Cała Polska)")
+        st.markdown("""
+        **Zasady algorytmu:**
+        * Brak sztywnej rejonizacji – serwisanci wyruszają z domu lub z hotelu z poprzedniego dnia.
+        * Grupowanie do **maks. 4 punktów** oddalonych od siebie o **maks. 50 km**.
+        * Trasa jest zatwierdzana, jeśli jej przewidywany przychód wynosi **min. 1200 zł** LUB zawiera **min. 2 zgłoszenia krytyczne** (np. awaria pompy ciepła).
+        * Automatyczne wykluczanie serwisantów mających wpisany urlop lub L4 w danym dniu.
+        """)
+
+        p_col1, p_col2 = st.columns(2)
+        with p_col1:
+            plan_start_date = st.date_input("Planuj wyjazdy począwszy od dnia:", value=datetime.date.today() + datetime.timedelta(days=1))
+        with p_col2:
+            plan_days = st.slider("Liczba dni do przodu:", min_value=1, max_value=10, value=5)
+
+        if st.button("🚀 Wygeneruj propozycje tras na kolejne dni", type="primary"):
+            proposals, msg = generate_smart_routes(df, profiles, plan_start_date, plan_days)
+            st.session_state["route_proposals"] = proposals
+            st.session_state["route_msg"] = msg
+
+        if "route_msg" in st.session_state:
+            st.info(st.session_state["route_msg"])
+
+        proposals = st.session_state.get("route_proposals", [])
+        if proposals:
+            for i, prop in enumerate(proposals):
+                with st.container(border=True):
+                    st.markdown(
+                        f"#### 📅 Dzień: `{prop['data']}` | 👷 Serwisant: **{prop['serwisant']}** | "
+                        f"📍 Punkty: **{prop['count']}/4** ({prop['miasta']}) | "
+                        f"💰 Przewidywany przychód: **{prop['total_rev']:,.0f} zł** | 🔥 Krytyczne: **{prop['crit_count']}**"
+                    )
+                    sub_df = df.loc[prop["indices"], ["ID_Zgloszenia", "Klient", "Kod_Pocztowy", "Miasto", "Adres", "Opis_Zgloszenia", "Priorytet_Krytyczny", "Kwota_Przewidywana"]]
+                    st.dataframe(sub_df, use_container_width=True, hide_index=True)
+
+            if st.button("✅ ZATWIERDŹ I PRZYPISZ WSZYSTKIE POWYŻSZE TRASY DO SERWISANTÓW", type="primary"):
+                for prop in proposals:
+                    for idx in prop["indices"]:
+                        df.loc[idx, "Serwisant"] = prop["serwisant"]
+                        df.loc[idx, "Data_Planowana"] = prop["data"]
+                        df.loc[idx, "Status"] = "Zaplanowane"
+                save_tickets(df)
+                st.session_state["route_proposals"] = []
+                st.success("Trasy zostały przypisane do harmonogramu serwisantów!")
+                st.rerun()
+
+    # --- ZAKŁADKA 2: PROFILOWANIE SERWISANTÓW (KADRY, BHP, MEDYCYNA PRACY, URLOPY, WYNIKI) ---
+    with tab_kadry:
+        st.subheader("👷 Kartoteka Kadrowa, Uprawnienia i Wyniki Serwisantów")
+        selected_tech = st.selectbox("Wybierz serwisanta do edycji profilu:", list(profiles.keys()))
+        t_prof = profiles[selected_tech]
+        t_metrics = calculate_tech_metrics(df, selected_tech)
+
+        # Podsumowanie wyników wybranego serwisanta
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Obsłużone zgłoszenia", t_metrics["total_closed"], f"Płatne: {t_metrics['paid_count']} | Gwar.: {t_metrics['warranty_count']}")
+        k2.metric("Naprawione przy 1. wizycie", f"{t_metrics['ftfr_pct']}%")
+        k3.metric("Obrót w tym miesiącu", f"{t_metrics['monthly_revenue']:,.0f} zł", t_metrics["active_rate_str"])
+        k4.metric("Brakuje do progów (3% / 4%)", f"I: {t_metrics['missing_tier_1']:,.0f} zł", f"II: {t_metrics['missing_tier_2']:,.0f} zł")
+
+        st.divider()
+
+        with st.form(f"form_profile_{selected_tech}"):
+            st.markdown("#### 1. Dane osobowe, hasło (PIN) i warunki zatrudnienia")
+            fc1, fc2, fc3 = st.columns(3)
+            with fc1:
+                new_full_name = st.text_input("Pełne imię, nazwisko i stanowisko:", value=t_prof.get("pelne_dane", ""))
+                new_phone = st.text_input("Telefon służbowy:", value=t_prof.get("telefon", ""))
+            with fc2:
+                new_pin = st.text_input("Stałe 4-cyfrowe hasło (PIN):", value=str(t_prof.get("pin", "")))
+                umowa_opts = ["Umowa o pracę", "B2B", "Umowa zlecenie", "Inna"]
+                curr_umowa = t_prof.get("umowa", "Umowa o pracę")
+                new_umowa = st.selectbox("Rodzaj umowy:", umowa_opts, index=umowa_opts.index(curr_umowa) if curr_umowa in umowa_opts else 0)
+            with fc3:
+                new_base_sal = st.number_input("Wynagrodzenie zasadnicze / podstawa (zł):", min_value=0.0, step=100.0, value=float(t_prof.get("wynagrodzenie_bazowe", 6000.0)))
+
+            st.markdown("#### 2. Szkolenia BHP oraz Badania Medycyny Pracy")
+            bh1, bh2 = st.columns(2)
+            with bh1:
+                new_bhp_date = st.text_input("Data szkolenia BHP (RRRR-MM-DD):", value=t_prof.get("bhp_data", ""))
+                new_bhp_prot = st.text_input("Numer i status protokołu BHP:", value=t_prof.get("bhp_protokol", ""))
+            with bh2:
+                new_med_date = st.text_input("Data badań medycyny pracy (RRRR-MM-DD):", value=t_prof.get("medycyna_data", ""))
+                new_med_scope = st.text_area("Zakres badań medycyny pracy (np. wysokość >3m, SEP, kat. B):", value=t_prof.get("medycyna_zakres", ""))
+
+            st.markdown("#### 3. Poufne notatki Koordynatora / Zarządu")
+            new_secret_notes = st.text_area("Poufne notatki (widoczne wyłącznie dla Koordynatora i Zarządu):", value=t_prof.get("notatki_poufne", ""))
+
+            if st.form_submit_button("💾 Zapisz kartotekę serwisanta", type="primary"):
+                profiles[selected_tech]["pelne_dane"] = new_full_name
+                profiles[selected_tech]["telefon"] = new_phone
+                profiles[selected_tech]["pin"] = new_pin
+                profiles[selected_tech]["umowa"] = new_umowa
+                profiles[selected_tech]["wynagrodzenie_bazowe"] = new_base_sal
+                profiles[selected_tech]["bhp_data"] = new_bhp_date
+                profiles[selected_tech]["bhp_protokol"] = new_bhp_prot
+                profiles[selected_tech]["medycyna_data"] = new_med_date
+                profiles[selected_tech]["medycyna_zakres"] = new_med_scope
+                profiles[selected_tech]["notatki_poufne"] = new_secret_notes
+                save_config_and_profiles(profiles)
+                st.success(f"Zapisano profil serwisanta {selected_tech}!")
+
+        # Rejestr urlopów i zwolnień lekarskich (L4)
+        st.markdown("#### 🏖️ Urlopy i Zwolnienia Lekarskie (L4)")
+        u_col1, u_col2, u_col3, u_col4 = st.columns([1, 1, 1, 1])
+        with u_col1:
+            ab_type = st.selectbox("Typ nieobecności:", ["Urlop wypoczynkowy", "Zwolnienie lekarskie (L4)", "Szkolenie / Inne"])
+        with u_col2:
+            ab_from = st.date_input("Od dnia:", value=datetime.date.today(), key="ab_from")
+        with u_col3:
+            ab_to = st.date_input("Do dnia:", value=datetime.date.today() + datetime.timedelta(days=3), key="ab_to")
+        with u_col4:
+            st.write("")
+            if st.button("➕ Dodaj nieobecność"):
+                profiles[selected_tech].setdefault("urlopy_l4", []).append({
+                    "typ": ab_type,
+                    "od": str(ab_from),
+                    "do": str(ab_to)
+                })
+                save_config_and_profiles(profiles)
+                st.success("Dodano wpis o nieobecności (Auto-Planer automatycznie pominie te dni).")
+                st.rerun()
+
+        if t_prof.get("urlopy_l4"):
+            st.table(pd.DataFrame(t_prof["urlopy_l4"]))
+            if st.button("🗑️ Wyczyść historię urlopów/L4 tego serwisanta"):
+                profiles[selected_tech]["urlopy_l4"] = []
+                save_config_and_profiles(profiles)
+                st.rerun()
+
+    # --- ZAKŁADKA 3: BAZA ZGŁOSZEŃ I DODAWANIE NOWEGO ---
+    with tab_zlecenia:
+        st.subheader("➕ Dodaj nowe zgłoszenie serwisowe")
+        with st.expander("Kliknij, aby rozwinąć formularz nowego zgłoszenia", expanded=False):
+            with st.form("new_ticket_form"):
+                nc1, nc2, nc3 = st.columns(3)
+                with nc1:
+                    n_klient = st.text_input("Imię i nazwisko / Firma klienta:")
+                    n_tel = st.text_input("Telefon:")
+                    n_typ_inst = st.selectbox("Typ instalacji:", ["Pompa Ciepła", "Fotowoltaika (PV)", "Pompa Ciepła + PV", "Magazyn Energii", "Inne"])
+                with nc2:
+                    n_kod = st.text_input("Kod pocztowy (XX-XXX):", placeholder="np. 05-800")
+                    n_miasto = st.text_input("Miejscowość:")
+                    n_adres = st.text_input("Ulica i numer:")
+                with nc3:
+                    n_kryt = st.selectbox("Czy zgłoszenie krytyczne (np. awaria PC zimą)?", ["Nie", "Tak"])
+                    n_typ_serw = st.selectbox("Rodzaj serwisu:", ["Płatny", "Gwarancyjny"])
+                    n_kwota = st.number_input("Przewidywany przychód (zł):", min_value=0.0, step=50.0, value=650.0)
+                    n_tech = st.selectbox("Przypisz od razu serwisanta (lub zostaw dla Auto-Planera):", ["Auto-Planer"] + list(profiles.keys()))
+
+                n_opis = st.text_area("Opis usterki / zakres prac:")
+
+                if st.form_submit_button("➕ Zapisz zgłoszenie w bazie", type="primary"):
+                    new_id = f"ZGL-{len(df) + 1001}"
+                    new_row = {
+                        "ID_Zgloszenia": new_id,
+                        "Klient": n_klient,
+                        "Adres": n_adres,
+                        "Kod_Pocztowy": n_kod,
+                        "Miasto": n_miasto,
+                        "Telefon": n_tel,
+                        "Typ_Instalacji": n_typ_inst,
+                        "Opis_Zgloszenia": n_opis,
+                        "Priorytet_Krytyczny": n_kryt,
+                        "Typ_Serwisu": n_typ_serw,
+                        "Serwisant": "" if n_tech == "Auto-Planer" else n_tech,
+                        "Data_Planowana": "" if n_tech == "Auto-Planer" else str(datetime.date.today()),
+                        "Status": "Nowe" if n_tech == "Auto-Planer" else "Zaplanowane",
+                        "Naprawione_1_Wizyta": "Tak",
+                        "Kwota_Przewidywana": n_kwota,
+                        "Kwota_Koncowa": 0.0,
+                        "Czas_Pracy_Min": 0,
+                        "Zalecenia_Klienta": "",
+                        "Notatka_Serwisanta": "",
+                        "Data_Zamkniecia": "",
+                        "Podpis_Zlozony": "Nie"
+                    }
+                    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+                    save_tickets(df)
+                    st.success(f"Dodano zgłoszenie {new_id}!")
+                    st.rerun()
+
+        st.subheader("📋 Wszystkie zgłoszenia (Edycja bezpośrednia)")
+        edited_df = st.data_editor(df, use_container_width=True, num_rows="dynamic")
+        if st.button("💾 Zapisz zmiany w tabeli zgłoszeń"):
+            save_tickets(edited_df)
+            st.success("Baza zgłoszeń została zaktualizowana!")
+
+    # --- ZAKŁADKA 4: BRANDING (LOGO FIRMY) I IMPORT EXCEL ---
+    with tab_brand:
+        st.subheader("🎨 Branding Aplikacji – Wgraj Logo Firmy")
+        st.info("Rekomendowane wymiary logo: **400 × 120 px** (proporcje ok. 3:1), format **PNG (z przezroczystym tłem)** lub JPG. Logo wyświetla się na ekranie głównym oraz na protokołach podpisywanych przez klienta.")
+
+        uploaded_logo = st.file_uploader("Wybierz plik graficzny z logo (PNG / JPG):", type=["png", "jpg", "jpeg"])
+        if uploaded_logo is not None:
+            img = Image.open(uploaded_logo)
+            img.thumbnail((400, 120))
+            buf = BytesIO()
+            img.save(buf, format="PNG")
+            b64_str = base64.b64encode(buf.getvalue()).decode("utf-8")
+            st.session_state["logo_b64"] = b64_str
+            with open(LOGO_FILE, "wb") as f:
+                f.write(buf.getvalue())
+            save_config_and_profiles(profiles, b64_str)
+            st.success("Logo zostało zapisane w chmurze i zaktualizowane w całej aplikacji!")
+            st.rerun()
+
+        st.divider()
+        st.subheader("📥 Import / Podmiana bazy z pliku Excel (.xlsx)")
+        uploaded_excel = st.file_uploader("Wgraj plik Excel z bazą zgłoszeń:", type=["xlsx"])
+        if uploaded_excel is not None:
+            if st.button("⚠️ Wczytaj dane z tego pliku Excel i zapisz w Google Sheets"):
+                new_df = ensure_columns(pd.read_excel(uploaded_excel))
+                save_tickets(new_df)
+                st.success("Baza zgłoszeń została zaimportowana!")
+                st.rerun()
+
+# ==========================================
+# 11. PANEL ZARZĄDU (RAPORTY DZIENNE I MIESIĘCZNE)
+# ==========================================
+elif st.session_state["logged_role"] == "zarzad":
+    df = st.session_state["df_tickets"]
+    profiles = st.session_state["profiles"]
+
+    st.subheader("📊 Panel Zarządu – Raporty Operacyjne i Finansowe")
+
+    rep_tab_day, rep_tab_month = st.tabs(["📅 Raport Dzienny z Pracy Serwisantów", "📈 Raport Miesięczny i Prowizje"])
+
+    with rep_tab_day:
+        sel_date = st.date_input("Wybierz dzień raportu:", value=datetime.date.today())
+        sel_date_str = str(sel_date)
+
+        day_df = df[(df["Data_Zamkniecia"] == sel_date_str) | (df["Data_Planowana"] == sel_date_str)].copy()
+        closed_day = day_df[day_df["Status"] == "Zakończone"]
+
+        dc1, dc2, dc3, dc4 = st.columns(4)
+        dc1.metric("Przychód w wybranym dniu", f"{closed_day['Kwota_Koncowa'].sum():,.2f} zł")
+        dc2.metric("Zlecenia zamknięte dzisiaj", f"{len(closed_day)} / {len(day_df)}")
+        ftfr_day = round((len(closed_day[closed_day["Naprawione_1_Wizyta"] == "Tak"]) / len(closed_day) * 100.0), 1) if len(closed_day) > 0 else 100.0
+        dc3.metric("Skuteczność 1. wizyty (Dzień)", f"{ftfr_day}%")
+        dc4.metric("Łączny czas pracy w terenie", f"{int(closed_day['Czas_Pracy_Min'].sum())} min")
+
+        st.markdown("#### Zestawienie dzienne według serwisantów")
+        day_rows = []
+        for t_name in profiles.keys():
+            t_day = closed_day[closed_day["Serwisant"] == t_name]
+            day_rows.append({
+                "Serwisant": t_name,
+                "Zamknięte zlecenia": len(t_day),
+                "Serwisy Płatne": len(t_day[t_day["Typ_Serwisu"] == "Płatny"]),
+                "Serwisy Gwarancyjne": len(t_day[t_day["Typ_Serwisu"] == "Gwarancyjny"]),
+                "Naprawione od ręki (1. wizyta)": len(t_day[t_day["Naprawione_1_Wizyta"] == "Tak"]),
+                "Czas pracy (min)": int(t_day["Czas_Pracy_Min"].sum()),
+                "Przychód (zł)": t_day["Kwota_Koncowa"].sum()
+            })
+        st.dataframe(pd.DataFrame(day_rows), use_container_width=True, hide_index=True)
+
+        st.markdown("#### Szczegółowy wykaz zleceń z wybranego dnia")
+        st.dataframe(day_df, use_container_width=True, hide_index=True)
+
+    with rep_tab_month:
+        months_avail = sorted(list(set(
+            [datetime.date.today().strftime("%Y-%m")] +
+            [str(x)[:7] for x in df["Data_Zamkniecia"].unique() if len(str(x)) >= 7]
+        )), reverse=True)
+        sel_month = st.selectbox("Wybierz miesiąc rozliczeniowy (RRRR-MM):", months_avail)
+
+        m_df = df[(df["Status"] == "Zakończone") & (df["Data_Zamkniecia"].astype(str).str.startswith(sel_month))].copy()
+
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("Przychód miesięczny ogółem", f"{m_df['Kwota_Koncowa'].sum():,.2f} zł")
+        mc2.metric("Obsłużone zgłoszenia", len(m_df))
+        mc3.metric("Płatne vs Gwarancyjne", f"{len(m_df[m_df['Typ_Serwisu']=='Płatny'])} / {len(m_df[m_df['Typ_Serwisu']=='Gwarancyjny'])}")
+        ftfr_m = round((len(m_df[m_df["Naprawione_1_Wizyta"] == "Tak"]) / len(m_df) * 100.0), 1) if len(m_df) > 0 else 100.0
+        mc4.metric("Skuteczność 1. wizyty (Miesiąc)", f"{ftfr_m}%")
+
+        st.markdown("#### Podsumowanie wyników, wynagrodzeń i prowizji serwisantów")
+        month_summary = []
+        for t_name, t_prof in profiles.items():
+            tm = calculate_tech_metrics(df, t_name)
+            base_sal = float(t_prof.get("wynagrodzenie_bazowe", 0.0))
+            month_summary.append({
+                "Serwisant": t_name,
+                "Umowa": t_prof.get("umowa", ""),
+                "Zlecenia ogółem": tm["total_closed"],
+                "Płatne": tm["paid_count"],
+                "Gwarancyjne": tm["warranty_count"],
+                "Skuteczność 1. wizyty (%)": f"{tm['ftfr_pct']}%",
+                "Obrót miesięczny (zł)": round(tm["monthly_revenue"], 2),
+                "Brakuje do 3% (15 tys.)": round(tm["missing_tier_1"], 2),
+                "Brakuje do 4% (30 tys.)": round(tm["missing_tier_2"], 2),
+                "Podstawa (zł)": base_sal,
+                "Należna prowizja (zł)": round(tm["commission_pln"], 2),
+                "Łącznie do wypłaty (zł)": round(base_sal + tm["commission_pln"], 2)
+            })
+        st.dataframe(pd.DataFrame(month_summary), use_container_width=True, hide_index=True)
