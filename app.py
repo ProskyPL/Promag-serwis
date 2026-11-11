@@ -1420,7 +1420,7 @@ if st.session_state["logged_role"] == "serwisant":
             )
             st.markdown('</div>', unsafe_allow_html=True)
 
-                        if st.button("✅ ZAKOŃCZ ZLECENIE I WRÓĆ DO TRASY Z TEGO DNIA", type="primary"):
+            if st.button("✅ ZAKOŃCZ ZLECENIE I WRÓĆ DO TRASY Z TEGO DNIA", type="primary"):
                 df.loc[t_idx, "Status"] = "Zakończone"
                 df.loc[t_idx, "Typ_Serwisu"] = typ_serwisu_real
                 df.loc[t_idx, "Naprawione_1_Wizyta"] = "Tak" if fixed_first_visit.startswith("Tak") else "Nie"
