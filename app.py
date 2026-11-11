@@ -25,7 +25,6 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    /* Optymalizacja pod ekrany dotykowe (Telefony i Tablety) */
     .stButton > button {
         width: 100%;
         min-height: 52px;
@@ -38,7 +37,6 @@ st.markdown("""
     .stSelectbox, .stTextInput, .stNumberInput, .stDateInput {
         font-size: 16px !important;
     }
-    /* Kafelki motywacyjne i KPI */
     .kpi-card {
         background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
         color: #ffffff;
@@ -68,7 +66,6 @@ st.markdown("""
         color: #38bdf8;
         margin-top: 4px;
     }
-    /* Nagłówek protokołu klienta z brandingiem */
     .client-box {
         background-color: #f8fafc;
         border: 2px solid #cbd5e1;
@@ -302,7 +299,7 @@ REQUIRED_COLS = [
     "Zalecenia_Klienta", "Notatka_Serwisanta", "Data_Zamkniecia", "Podpis_Zlozony"
 ]
 
- NUMERIC_COLS = ["Kwota_Przewidywana", "Kwota_Koncowa", "Czas_Pracy_Min"]
+NUMERIC_COLS = ["Kwota_Przewidywana", "Kwota_Koncowa", "Czas_Pracy_Min"]
 
 def ensure_columns(df):
     if df is None or df.empty:
@@ -311,7 +308,6 @@ def ensure_columns(df):
             empty_df[nc] = empty_df[nc].astype(float)
         return empty_df
 
-    # 1. Czyszczenie nazw kolumn (usuwanie pustych i nienazwanych kolumn z Excela/GSheets)
     clean_cols = []
     cols_to_keep = []
     for idx, c in enumerate(df.columns):
@@ -324,7 +320,6 @@ def ensure_columns(df):
     df.columns = clean_cols
     df = df.loc[:, ~df.columns.duplicated()].copy()
 
-    # 2. Bezpieczne mapowanie nazw kolumn z oryginalnego arkusza (bez tworzenia duplikatów)
     col_map = {}
     used_targets = set(df.columns)
 
@@ -351,11 +346,9 @@ def ensure_columns(df):
     if col_map:
         df = df.rename(columns=col_map)
 
-    # Ponowne usunięcie ewentualnych duplikatów kolumn
     df = df.loc[:, ~df.columns.duplicated()].copy()
     df = df.reset_index(drop=True)
 
-    # 3. Uzupełnienie wymaganych kolumn systemowych
     for rc in REQUIRED_COLS:
         if rc not in df.columns:
             if rc == "ID_Zgloszenia":
@@ -375,11 +368,9 @@ def ensure_columns(df):
             else:
                 df[rc] = ""
 
-    # 4. Uporządkowanie kolejności kolumn (najpierw REQUIRED_COLS, potem dodatkowe z arkusza)
     extra_cols = [c for c in df.columns if c not in REQUIRED_COLS]
     df = df[REQUIRED_COLS + extra_cols].copy()
 
-    # 5. Rygorystyczna normalizacja typów dla st.data_editor (brak None, NaN, obiektów mieszanych)
     for col in df.columns:
         if col in NUMERIC_COLS:
             default_val = 650.0 if col == "Kwota_Przewidywana" else 0.0
@@ -387,12 +378,10 @@ def ensure_columns(df):
         else:
             df[col] = df[col].fillna("").astype(str).replace(["None", "nan", "NaT", "<NA>"], "")
 
-    # Naprawa pustych ID_Zgloszenia
     empty_id_mask = df["ID_Zgloszenia"].str.strip() == ""
     if empty_id_mask.any():
         df.loc[empty_id_mask, "ID_Zgloszenia"] = [f"ZGL-{i+1001}" for i in df.index[empty_id_mask]]
 
-    # Naprawa pustych Statusów
     empty_status_mask = df["Status"].str.strip() == ""
     if empty_status_mask.any():
         df.loc[empty_status_mask, "Status"] = "Nowe"
@@ -867,7 +856,7 @@ elif st.session_state["logged_role"] == "koordynator":
     tab_plan, tab_kadry, tab_zlecenia, tab_brand = st.tabs([
         "🗺️ Harmonogram i Auto-Planer Tras",
         "👷 Profilowanie Serwisantów (Kadry i Wyniki)",
-        "📋 Baza Zgłoszeń i Dodawanie",
+        "📋 Baza Zgłoszeń i Edycja",
         "🎨 Branding (Logo) i Plik Excel"
     ])
 
@@ -1000,71 +989,121 @@ elif st.session_state["logged_role"] == "koordynator":
                 st.rerun()
 
     with tab_zlecenia:
-        st.subheader("➕ Dodaj nowe zgłoszenie serwisowe")
-        with st.expander("Kliknij, aby rozwinąć formularz nowego zgłoszenia", expanded=False):
-            with st.form("new_ticket_form"):
-                nc1, nc2, nc3 = st.columns(3)
-                with nc1:
+        col_add, col_edit = st.columns(2)
+
+        with col_add:
+            st.subheader("➕ Dodaj nowe zgłoszenie")
+            with st.expander("Rozwiń formularz dodawania nowego zgłoszenia", expanded=False):
+                with st.form("new_ticket_form"):
                     n_klient = st.text_input("Imię i nazwisko / Firma klienta:")
                     n_tel = st.text_input("Telefon:")
-                    n_typ_inst = st.selectbox("Typ instalacji:", ["Pompa Ciepła", "Fotowoltaika (PV)", "Pompa Ciepła + PV", "Magazyn Energii", "Inne"])
-                with nc2:
                     n_kod = st.text_input("Kod pocztowy (XX-XXX):", placeholder="np. 05-800")
                     n_miasto = st.text_input("Miejscowość:")
                     n_adres = st.text_input("Ulica i numer:")
-                with nc3:
-                    n_kryt = st.selectbox("Czy zgłoszenie krytyczne (np. awaria PC zimą)?", ["Nie", "Tak"])
+                    n_typ_inst = st.selectbox("Typ instalacji:", ["Pompa Ciepła", "Fotowoltaika (PV)", "Pompa Ciepła + PV", "Magazyn Energii", "Inne"])
+                    n_kryt = st.selectbox("Czy zgłoszenie krytyczne (np. awaria PC)?", ["Nie", "Tak"])
                     n_typ_serw = st.selectbox("Rodzaj serwisu:", ["Płatny", "Gwarancyjny"])
                     n_kwota = st.number_input("Przewidywany przychód (zł):", min_value=0.0, step=50.0, value=650.0)
-                    n_tech = st.selectbox("Przypisz od razu serwisanta (lub zostaw dla Auto-Planera):", ["Auto-Planer"] + list(profiles.keys()))
+                    n_tech = st.selectbox("Przypisz serwisanta (lub Auto-Planer):", ["Auto-Planer"] + list(profiles.keys()))
+                    n_opis = st.text_area("Opis usterki / zakres prac:")
 
-                n_opis = st.text_area("Opis usterki / zakres prac:")
+                    if st.form_submit_button("➕ Zapisz nowe zgłoszenie", type="primary"):
+                        new_id = f"ZGL-{len(df) + 1001}"
+                        new_row = {
+                            "ID_Zgloszenia": new_id,
+                            "Klient": n_klient,
+                            "Adres": n_adres,
+                            "Kod_Pocztowy": n_kod,
+                            "Miasto": n_miasto,
+                            "Telefon": n_tel,
+                            "Typ_Instalacji": n_typ_inst,
+                            "Opis_Zgloszenia": n_opis,
+                            "Priorytet_Krytyczny": n_kryt,
+                            "Typ_Serwisu": n_typ_serw,
+                            "Serwisant": "" if n_tech == "Auto-Planer" else n_tech,
+                            "Data_Planowana": "" if n_tech == "Auto-Planer" else str(datetime.date.today()),
+                            "Status": "Nowe" if n_tech == "Auto-Planer" else "Zaplanowane",
+                            "Naprawione_1_Wizyta": "Tak",
+                            "Kwota_Przewidywana": float(n_kwota),
+                            "Kwota_Koncowa": 0.0,
+                            "Czas_Pracy_Min": 0.0,
+                            "Zalecenia_Klienta": "",
+                            "Notatka_Serwisanta": "",
+                            "Data_Zamkniecia": "",
+                            "Podpis_Zlozony": "Nie"
+                        }
+                        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+                        save_tickets(df)
+                        st.success(f"Dodano zgłoszenie {new_id}!")
+                        st.rerun()
 
-                if st.form_submit_button("➕ Zapisz zgłoszenie w bazie", type="primary"):
-                    new_id = f"ZGL-{len(df) + 1001}"
-                    new_row = {
-                        "ID_Zgloszenia": new_id,
-                        "Klient": n_klient,
-                        "Adres": n_adres,
-                        "Kod_Pocztowy": n_kod,
-                        "Miasto": n_miasto,
-                        "Telefon": n_tel,
-                        "Typ_Instalacji": n_typ_inst,
-                        "Opis_Zgloszenia": n_opis,
-                        "Priorytet_Krytyczny": n_kryt,
-                        "Typ_Serwisu": n_typ_serw,
-                        "Serwisant": "" if n_tech == "Auto-Planer" else n_tech,
-                        "Data_Planowana": "" if n_tech == "Auto-Planer" else str(datetime.date.today()),
-                        "Status": "Nowe" if n_tech == "Auto-Planer" else "Zaplanowane",
-                        "Naprawione_1_Wizyta": "Tak",
-                        "Kwota_Przewidywana": float(n_kwota),
-                        "Kwota_Koncowa": 0.0,
-                        "Czas_Pracy_Min": 0.0,
-                        "Zalecenia_Klienta": "",
-                        "Notatka_Serwisanta": "",
-                        "Data_Zamkniecia": "",
-                        "Podpis_Zlozony": "Nie"
-                    }
-                    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-                    save_tickets(df)
-                    st.success(f"Dodano zgłoszenie {new_id}!")
-                    st.rerun()
+        with col_edit:
+            st.subheader("✏️ Szybka edycja wybranego zgłoszenia")
+            with st.expander("Rozwiń formularz edycji istniejącego zgłoszenia", expanded=False):
+                if not df.empty:
+                    edit_opts = [f"{r['ID_Zgloszenia']} | {r['Miasto']} - {r['Klient']}" for _, r in df.iterrows()]
+                    sel_edit = st.selectbox("Wybierz zgłoszenie do edycji:", edit_opts)
+                    sel_edit_id = sel_edit.split(" | ")[0]
+                    e_idx = df[df["ID_Zgloszenia"] == sel_edit_id].index[0]
+                    e_row = df.loc[e_idx]
 
-        st.subheader("📋 Wszystkie zgłoszenia (Edycja bezpośrednia)")
-        with st.form("editor_form"):
-            safe_df = ensure_columns(df)
-            edited_df = st.data_editor(
-                safe_df,
-                use_container_width=True,
-                num_rows="dynamic",
-                hide_index=True,
-                key="tickets_editor_safe"
+                    with st.form("quick_edit_ticket_form"):
+                        e_klient = st.text_input("Klient:", value=str(e_row["Klient"]))
+                        e_tel = st.text_input("Telefon:", value=str(e_row["Telefon"]))
+                        e_kod = st.text_input("Kod pocztowy:", value=str(e_row["Kod_Pocztowy"]))
+                        e_miasto = st.text_input("Miasto:", value=str(e_row["Miasto"]))
+                        e_adres = st.text_input("Adres:", value=str(e_row["Adres"]))
+
+                        tech_choices = [""] + list(profiles.keys())
+                        curr_tech = str(e_row["Serwisant"]) if str(e_row["Serwisant"]) in tech_choices else ""
+                        e_tech = st.selectbox("Przypisany serwisant:", tech_choices, index=tech_choices.index(curr_tech))
+
+                        status_choices = ["Nowe", "Zaplanowane", "W trakcie", "Zakończone"]
+                        curr_stat = str(e_row["Status"]) if str(e_row["Status"]) in status_choices else "Nowe"
+                        e_status = st.selectbox("Status:", status_choices, index=status_choices.index(curr_stat))
+
+                        e_data_plan = st.text_input("Data planowana (RRRR-MM-DD):", value=str(e_row["Data_Planowana"]))
+                        e_kryt = st.selectbox("Krytyczne:", ["Nie", "Tak"], index=1 if str(e_row["Priorytet_Krytyczny"]) == "Tak" else 0)
+                        e_kwota = st.number_input("Kwota przewidywana (zł):", min_value=0.0, step=50.0, value=float(e_row["Kwota_Przewidywana"]))
+                        e_opis = st.text_area("Opis zgłoszenia:", value=str(e_row["Opis_Zgloszenia"]))
+
+                        if st.form_submit_button("💾 Zapisz zmiany w zgłoszeniu", type="primary"):
+                            df.loc[e_idx, "Klient"] = e_klient
+                            df.loc[e_idx, "Telefon"] = e_tel
+                            df.loc[e_idx, "Kod_Pocztowy"] = e_kod
+                            df.loc[e_idx, "Miasto"] = e_miasto
+                            df.loc[e_idx, "Adres"] = e_adres
+                            df.loc[e_idx, "Serwisant"] = e_tech
+                            df.loc[e_idx, "Status"] = e_status
+                            df.loc[e_idx, "Data_Planowana"] = e_data_plan
+                            df.loc[e_idx, "Priorytet_Krytyczny"] = e_kryt
+                            df.loc[e_idx, "Kwota_Przewidywana"] = float(e_kwota)
+                            df.loc[e_idx, "Opis_Zgloszenia"] = e_opis
+                            save_tickets(df)
+                            st.success(f"Zaktualizowano zgłoszenie {sel_edit_id}!")
+                            st.rerun()
+
+        st.divider()
+        st.subheader("📋 Wykaz wszystkich zgłoszeń w bazie")
+        f_col1, f_col2 = st.columns(2)
+        with f_col1:
+            filter_status = st.multiselect("Filtruj po statusie:", ["Nowe", "Zaplanowane", "W trakcie", "Zakończone"], default=["Nowe", "Zaplanowane", "W trakcie", "Zakończone"])
+        with f_col2:
+            search_q = st.text_input("🔍 Szukaj (Klient / Miasto / Adres / ID):")
+
+        view_df = df.copy()
+        if filter_status:
+            view_df = view_df[view_df["Status"].isin(filter_status)]
+        if search_q:
+            mask = (
+                view_df["Klient"].astype(str).str.contains(search_q, case=False, na=False) |
+                view_df["Miasto"].astype(str).str.contains(search_q, case=False, na=False) |
+                view_df["Adres"].astype(str).str.contains(search_q, case=False, na=False) |
+                view_df["ID_Zgloszenia"].astype(str).str.contains(search_q, case=False, na=False)
             )
-            submit_edits = st.form_submit_button("💾 Zapisz zmiany w tabeli zgłoszeń", type="primary")
-            if submit_edits:
-                save_tickets(edited_df)
-                st.success("Baza zgłoszeń została zaktualizowana w Google Sheets!")
-                st.rerun()
+            view_df = view_df[mask]
+
+        st.dataframe(view_df, use_container_width=True, hide_index=True)
 
     with tab_brand:
         st.subheader("🎨 Branding Aplikacji – Wgraj Logo Firmy")
