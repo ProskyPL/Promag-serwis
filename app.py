@@ -87,6 +87,15 @@ st.markdown("""
         margin-bottom: 12px;
         color: #0f172a;
     }
+    .diag-box {
+        background-color: #0f172a;
+        color: #f8fafc;
+        border-left: 6px solid #38bdf8;
+        border-radius: 10px;
+        padding: 16px;
+        margin-top: 8px;
+        margin-bottom: 12px;
+    }
     @media (max-width: 768px) {
         .kpi-value { font-size: 20px; }
         .block-container { padding-top: 1.5rem !important; padding-left: 0.8rem !important; padding-right: 0.8rem !important; }
@@ -95,7 +104,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. STAŁE, CENNIK I MAPA GEOGRAFICZNA POLSKI (DO KLASTRÓW <= 50 KM)
+# 2. STAŁE, CENNIK, MAPA KODÓW I BAZA DIAGNOSTYCZNA (DEYE, GOODWE, ARGOM)
 # ==========================================
 GOOGLE_SHEET_NAME = "Serwisowa posortowana"
 LOCAL_EXCEL_FILE = "Serwisowa posortowana.xlsx"
@@ -175,7 +184,201 @@ CENNIK_BAZOWY = {
     "Czyszczenie filtrów i układu CO": 400.0,
     "Pomiary elektryczne + Protokół": 650.0,
     "Modernizacja / Rozbudowa rozdzielnicy": 950.0,
+    "Wymiana glikolu / płukanie układu": 1200.0,
     "Serwis Gwarancyjny (Rozliczenie wewnętrzne)": 0.0
+}
+
+# Szczegółowa baza diagnostyczna i kodów błędów ("krok po kroku")
+DIAGNOSTIC_DB = {
+    "Pompa Ciepła Argom (Monoblok / Split)": {
+        "E03 / E08 (Flow Switch Error - Błąd przepływu wody)": {
+            "przyczyna": "Woda lub glikol krąży zbyt wolno przez wymiennik płytowy pompy ciepła. Sterownik odcina sprężarkę, aby nie zamrozić i nie rozerwać wymiennika.",
+            "kroki": [
+                "KROK 1 (Manometr): Spójrz na manometr układu CO. Jeśli ciśnienie jest poniżej 1.0 bar – dopuść wody/glikolu do 1.5 - 1.8 bar.",
+                "KROK 2 (Filtry - 90% wszystkich awarii!): Zakręć zawory odcinające przed i za filtrem siatkowym (skośnym) oraz separatorem magnetycznym. Podstaw wiadro, odkręć korek, wyjmij sitko i trzpień magnetyczny. Wypłucz czarny szlam (magnetyt) pod bieżącą wodą, zamontuj z powrotem, odkręć zawory i odpowietrz układ.",
+                "KROK 3 (Zamknięte obiegi): Jeśli instalacja nie ma bufora, a głowice na grzejnikach lub siłowniki podłogówki pozamykały wszystkie pętle – pompa nie ma gdzie tłoczyć wody! Odkręć min. 2 pętle na stałe lub wyreguluj zawór nadmiarowo-upustowy (bypass).",
+                "KROK 4 (Pompa obiegowa): Przyłóż dłoń lub śrubokręt do korpusu pompy obiegowej (Wilo/Grundfos). Sprawdź czy świeci się dioda i czy wirnik pracuje. Jeśli pompa stoi – odpowietrz ją lub sprawdź miernikiem czy z płyty głównej wychodzi zasilanie 230V AC.",
+                "KROK 5 (Czujnik przepływu - łopatka): Jeśli rury są gorące i przepływ fizycznie jest, wykręć czujnik przepływu (Flow Switch) i sprawdź, czy pod łopatkę nie weszły pakuły lub taśma teflonowa z montażu."
+            ]
+        },
+        "E01 / P01 (High Pressure - Błąd wysokiego ciśnienia HP)": {
+            "przyczyna": "Sprężarka tłoczy gorący gaz, ale woda w wymienniku nie odbiera tego ciepła. Ciśnienie freonu przekracza limit bezpieczeństwa i presostat HP wyłącza układ.",
+            "kroki": [
+                "KROK 1 (Ustal kiedy wybija błąd): Sprawdź czy błąd E01/P01 wyskakuje przy grzaniu domu (CO), czy przy grzaniu bojlera (CWU).",
+                "KROK 2 (Jeśli wybija na CWU): Sprawdź zadaną temperaturę CWU na sterowniku. Jeśli klient ustawił 58-60°C na samej sprężarce – obniż nastawę dla sprężarki na 48-50°C, a dogrzewanie powyżej 50°C (np. Antylegionella) ustaw na grzałkę elektryczną.",
+                "KROK 3 (Zawór 3-drogowy): Zdejmij siłownik z zaworu 3-drogowego (CO/CWU) i sprawdź, czy trzpień zaworu nie zaciął się w połowie drogi (zablokowany przepływ).",
+                "KROK 4 (Odpowietrzenie wężownicy CWU): Odpowietrz górny króciec wężownicy przy zasobniku CWU.",
+                "KROK 5 (Jeśli wybija na CO): Wyczyść filtr siatkowy i magnetyczny (jak w błędzie E03) oraz zwiększ bieg pompy obiegowej, aby różnica temperatur (Delta T) między zasilaniem a powrotem wynosiła 4-7°C."
+            ]
+        },
+        "E02 / P02 (Low Pressure - Błąd niskiego ciśnienia LP)": {
+            "przyczyna": "Zbyt niskie ciśnienie po stronie ssawnej sprężarki – brak odbioru ciepła z powietrza zewnętrznego (oblodzenie/wentylator) lub ubytek czynnika chłodniczego (wyciek gazu).",
+            "kroki": [
+                "KROK 1 (Kontrola parownika): Sprawdź tylny wymiennik lamelowy jednostki zewnętrznej. Jeśli jest całkowicie skuty lodem – polej go ciepłą wodą (NIGDY nie kłuj lodu śrubokrętem, bo przebijesz rurki miedziane!).",
+                "KROK 2 (Taca ociekowa i Defrost): Udrożnij otwór odpływowy skroplin w dolnej tacy, sprawdź czy grzeje kabel grzewczy tacy i uruchom ręczne odszranianie (Defrost) ze sterownika.",
+                "KROK 3 (Wentylator): Sprawdź, czy podczas pracy sprężarki obraca się wentylator jednostki zewnętrznej.",
+                "KROK 4 (Kontrola szczelności F-gaz): Jeśli parownik jest czysty i wentylator kręci, a błąd LP wraca po kilku minutach – podepnij manometry chłodnicze i sprawdź śrubunki/kielichy detektorem gazu (szukaj tłustych plam oleju chłodniczego)."
+            ]
+        },
+        "E04 / P04 (High Discharge Temp - Zbyt wysoka temp. tłoczenia sprężarki >110°C)": {
+            "przyczyna": "Przegrzewanie głowicy sprężarki spowodowane zablokowanym elektronicznym zaworem rozprężnym (EEV) lub zbyt małą ilością czynnika chłodniczego w układzie.",
+            "kroki": [
+                "KROK 1 (Wtyczka EEV): Otwórz pokrywę elektroniki w jednostce zewnętrznej i dociśnij 5/6-pinową wtyczkę cewki zaworu rozprężnego (EEV) na płycie głównej.",
+                "KROK 2 (Test cewki EEV): Wyłącz zasilanie pompy z bezpiecznika na 1 minutę i włącz ponownie – nasłuchuj przy zaworze EEV, czy słychać charakterystyczne 'tykanie' pozycjonowania krokowego silnika zaworu. Zmierz omomierzem opór uzwojeń cewki EEV (zazwyczaj kilkadziesiąt Ohm na parę pinów).",
+                "KROK 3 (Ilość czynnika): Jeśli cewka i zawór EEV są sprawne, przyczyną jest ubytek freonu. Zlokalizuj nieszczelność, odzyskaj czynnik, wykonaj próbę azotową, próżnię i napełnij układ wagowo zgodnie z tabliczką znamionową Argom."
+            ]
+        },
+        "E05 do E15 (Błędy czujników temperatury NTC - przerwa lub zwarcie)": {
+            "przyczyna": "Płyta główna widzi nielogiczną rezystancję czujnika temperatury (np. -40°C przy przerwie w kablu lub +120°C przy zwarciu czujnika).",
+            "kroki": [
+                "KROK 1 (Podgląd temperatur na ekranie): Wejdź w menu 'Status / Parametry bieżące' na sterowniku Argom i odczytaj wszystkie temperatury po kolei.",
+                "KROK 2 (Namierzenie uszkodzonej czujki): Znajdź pozycję pokazującą skrajną wartość (np. -39°C, kreski '--' albo 99°C na zimnej rurze).",
+                "KROK 3 (Pomiar miernikiem): Wypnij wtyczkę tego czujnika z płyty głównej, ustaw miernik na pomiar rezystancji (kOhm) i zmierz opór na dwóch pinach czujnika.",
+                "KROK 4 (Weryfikacja): W temperaturze pokojowej (ok. 20-25°C) czujnik NTC 10k powinien mieć opór 10 - 12.5 kOhm (a czujnik 5k ok. 5 - 6 kOhm). Jeśli miernik pokazuje 'OL' (przerwa) lub '0.0' (zwarcie) – wymień czujnik na nowy i osadź go w tulei z pastą termoprzewodzącą."
+            ]
+        },
+        "E09 / Comm Error (Błąd komunikacji ekranu / hydroboxa z agregatem zewnętrznym)": {
+            "przyczyna": "Brak wymiany danych po magistrali RS485 pomiędzy jednostką wewnętrzną a zewnętrzną.",
+            "kroki": [
+                "KROK 1 (Zasilanie agregatu): Sprawdź miernikiem na listwie zasilającej w jednostce zewnętrznej, czy agregat w ogóle dostaje 230V / 400V (często wybija osobny bezpiecznik od jednostki zewnętrznej).",
+                "KROK 2 (Przewód RS485 A/B): Sprawdź dwużyłowy przewód komunikacyjny (zaciski A i B lub P i Q). Upewnij się, że żyła A idzie dokładnie do A, a B do B oraz że śrubki nie zaciskają izolacji kabla.",
+                "KROK 3 (Zakłócenia): Sprawdź, czy kabel komunikacyjny nie biegnie w jednym korytku obok kabli siłowych AC lub kabli DC od fotowoltaiki bez ekranowania."
+            ]
+        }
+    },
+    "Falownik Deye (Hybrydowy SG04LP3 / SG01HP3 i Stringowy)": {
+        "F08 (GFDI_Relay_Failure - Błąd przekaźnika uziemienia / prądu upływu)": {
+            "przyczyna": "Falownik wykrył problem z uziemieniem obudowy lub zbyt wysokie napięcie między przewodem neutralnym (N) a ochronnym (PE).",
+            "kroki": [
+                "KROK 1 (Pomiar N-PE): Ustaw miernik na V AC i zmierz napięcie między szyną N a szyną PE w rozdzielnicy. Jeśli wynosi powyżej 5V-10V – w budynku jest słabe uziemienie lub brak uziemienia punktu podziału PEN.",
+                "KROK 2 (Przewód PE): Sprawdź, czy żółto-zielony przewód uziemiający jest solidnie przykręcony do obudowy falownika i szyny PE.",
+                "KROK 3 (Ustawienia wyspowe Deye): Wejdź w menu: Advanced Function (kod 7777) i sprawdź opcję 'Signal ISLAND MODE' (zaznacz ją, jeśli falownik pracuje z wyjściem awaryjnym LOAD i przekaźnik N-PE ma zwierać neutralny w trybie wyspowym)."
+            ]
+        },
+        "F13 (Working_Mode_Change - Zmiana trybu pracy / Reset sieci)": {
+            "przyczyna": "Zmiana parametrów sieci lub trybu pracy w menu; falownik przełącza wewnętrzne przekaźniki.",
+            "kroki": [
+                "KROK 1 (Odczekaj): Poczekaj 3 minuty – zazwyczaj falownik sam odlicza czas startu i wraca do normalnej pracy.",
+                "KROK 2 (Twardy restart): Jeśli F13 wisi na stałe: wyłącz bezpiecznik AC (Grid), przełącz hebel DC na OFF, wyłącz baterię. Poczekaj 2 minuty aż ekran całkowicie zgaśnie. Włącz ponownie w kolejności: 1. Bateria -> 2. DC -> 3. AC."
+            ]
+        },
+        "F18 (Tz_Ac_OverCurr_Fault - Przetężenie / Zwarcie po stronie AC)": {
+            "przyczyna": "Nagły skok prądu na wyjściu AC lub przeciążenie/zwarcie w obwodzie rezerwowym LOAD (Backup).",
+            "kroki": [
+                "KROK 1 (Odłączenie wyjścia LOAD): Wyłącz bezpiecznik zasilający obwód awaryjny LOAD (Backup) oraz bezpiecznik sieciowy GRID.",
+                "KROK 2 (Test bez obciążenia): Uruchom falownik na samej baterii i panelach PV (z całkowicie odpiętymi wtyczkami AC Grid i Load).",
+                "KROK 3 (Diagnoza): Jeśli bez kabli AC falownik startuje czysto i daje 230V na zaciskach LOAD – w instalacji domowej klienta na wyjściu Backup jest zwarcie albo podpięto tam za duże obciążenie (np. pompa ciepła lub indukcja na 1 fazie). Jeśli błąd F18 wyskakuje nawet przy odpiętych kablach AC – uszkodzony moduł IGBT w falowniku (zgłoś wymianę gwarancyjną)."
+            ]
+        },
+        "F20 (Tz_Dc_OverCurr_Fault - Przetężenie po stronie DC)": {
+            "przyczyna": "Prąd z paneli PV lub z baterii przekroczył maksymalny prąd wejściowy falownika.",
+            "kroki": [
+                "KROK 1: Wyłącz hebel DC i wypnij stringi PV.",
+                "KROK 2: Zmierz napięcie każdego stringu (Uoc) oraz prąd cęgami DC. Upewnij się, że nie połączono równolegle dwóch stringów pod pojedyncze wejście MPPT o niskim limicie prądowym.",
+                "KROK 3: W menu Battery Setting zmniejsz maksymalny prąd ładowania/rozładowania baterii (np. do 50A) i zrestartuj falownik."
+            ]
+        },
+        "F22 (Tz_EmergStop_Fault - Wyłącznik awaryjny PPOŻ / Brak zwory RSD)": {
+            "przyczyna": "Otwarty obwód na stykach wyłącznika bezpieczeństwa (Rapid Shutdown / Emergency Stop) na płycie sterującej Deye.",
+            "kroki": [
+                "KROK 1: Odkręć dolną pokrywę komory przyłączeniowej falownika Deye.",
+                "KROK 2: Zlokalizuj zieloną wielopinową kostkę sterującą i piny opisane w instrukcji jako RSD / Emergency Stop (zazwyczaj fabrycznie połączone krótkim mostkiem z drutu).",
+                "KROK 3: Jeśli klient NIE MA zewnętrznego przycisku PPOŻ – sprawdź czy fabryczna zworka (mostek) nie wypadła lub nie poluzowała się w gnieździe. Dokręć ją płaskim wkrętakiem.",
+                "KROK 4: Jeśli klient MA przycisk PPOŻ – sprawdź miernikiem na 'piszczyku' czy przycisk nie został wciśnięty przez klienta lub czy przewód do przycisku nie jest przerwany."
+            ]
+        },
+        "F23 (Tz_GFCI_OC_Fault - Prąd upływu powyżej 300 mA)": {
+            "przyczyna": "Upływ prądu z modułów PV lub kabli solarnych przez wilgoć do konstrukcji dachowej / ziemi.",
+            "kroki": [
+                "KROK 1: Wypnij wszystkie stringi PV z falownika. Podłącz tylko String 1 i zobacz czy falownik ruszy. Następnie podłącz sam String 2 – w ten sposób od razu wiesz, który obwód na dachu ma przebicie.",
+                "KROK 2: Na wadliwym stringu zmierz rezystancję izolacji (Riso) miernikiem przy 1000V DC (Plus do PE, Minus do PE). Szukaj wtyczki MC4 leżącej w wodzie na membranie dachowej lub przetartego kabla pod klemą.",
+                "KROK 3: Jeśli wybija zewnętrzna różnicówka (RCD) w rozdzielnicy – upewnij się, że zamontowano RCD o prądzie 300mA (a nie domową 30mA!)."
+            ]
+        },
+        "F24 (DC_Insulation_Fault - Niska rezystancja izolacji DC Riso)": {
+            "przyczyna": "Zwarcie bieguna dodatniego (+) lub ujemnego (-) stringu PV do uziemionej ramy paneli lub uszkodzony ochronnik przepięć SPD DC.",
+            "kroki": [
+                "KROK 1 (Test ochronników SPD DC): Wyłącz DC, otwórz rozdzielnicę DC i wyjmij wkładki ochronników przepięć (SPD). Włącz falownik – jeśli błąd F24 zniknął, zawilgocona wkładka SPD zwierała do ziemi (wymień wkładkę).",
+                "KROK 2 (Pomiar napięć do ziemi): Wypnij stringi z falownika. Zmierz miernikiem napięcie DC między PLUSEM stringu a szyną PE (uziemieniem) oraz MINUSEM a PE.",
+                "KROK 3 (Lokalizacja zwarcia): W zdrowym stringu napięcie do ziemi szybko spada w okolice kilku-kilkunastu woltów. Jeśli na jednym biegunie trzyma sztywno np. 250V-400V, a na drugim 0V – masz twarde zwarcie kabla lub złącza MC4 do konstrukcji na dachu."
+            ]
+        },
+        "F29 (Parallel_Comm_Fault - Błąd komunikacji pracy równoległej)": {
+            "przyczyna": "W menu falownika włączono tryb pracy kaskadowej kilku falowników (Master/Slave), mimo że zamontowany jest tylko jeden falownik.",
+            "kroki": [
+                "KROK 1: Wejdź na ekranie dotykowym Deye w koło zębate -> Advanced Function (hasło: 7777).",
+                "KROK 2: Przejdź do sekcji 'Parallel' i ODZNACZ ptaszek przy 'Parallel', 'Master' oraz 'Slave'.",
+                "KROK 3: Zatwierdź przyciskiem OK w prawym dolnym rogu ekranu – błąd F29 zniknie natychmiast."
+            ]
+        },
+        "F35 (AC_NoUtility_Fault - Brak sieci AC / Brak fazy lub złe wirowanie faz)": {
+            "przyczyna": "Falownik nie widzi poprawnego napięcia 3-fazowego na kostce GRID lub fazy L1, L2, L3 są podłączone w złej kolejności.",
+            "kroki": [
+                "KROK 1 (Pomiar na śrubach GRID): Zmierz miernikiem napięcia bezpośrednio na śrubach kostki GRID wewnątrz falownika: L1-N, L2-N, L3-N (musi być 210-250V) oraz L1-L2, L2-L3, L1-L3 (ok. 400V). Jeśli brakuje fazy – sprawdź bezpiecznik w rozdzielnicy i przy liczniku.",
+                "KROK 2 (Kolejność faz / Wirowanie): Falowniki 3-fazowe Deye wymagają zgodnego wirowania faz! Jeśli napięcia są obecne, a nadal wisi F35 – wyłącz bezpiecznik AC i zamień miejscami przewody L1 oraz L2 na kostce GRID w falowniku."
+            ]
+        },
+        "F56 / F58 (DC_VoltLow_Fault / BMS_Comm_Fault - Problem z baterią / komunikacją BMS)": {
+            "przyczyna": "Bateria rozładowana poniżej progu odcięcia, wyłączony stycznik BMS lub brak komunikacji po kablu CAN/RS485 między Deye a magazynem energii.",
+            "kroki": [
+                "KROK 1 (Pomiar napięcia na klemach BAT): Zmierz napięcie DC na grubych śrubach BAT+ i BAT- w falowniku. Jeśli jest 0V – włącz bezpiecznik na baterii i przytrzymaj przycisk SW/RST na magazynie przez 5 sekund (wybudzenie Black Start).",
+                "KROK 2 (Weryfikacja portu BMS): Sprawdź czy skrętka RJ45 od baterii jest wpięta w falowniku w gniazdo opisane jako 'BMS' (częsty błąd to wpięcie w gniazdo Meter lub DRM).",
+                "KROK 3 (Kod protokołu Lithium Mode): Wejdź w Battery Setting -> zaznacz 'Lithium' -> kliknij strzałkę w dół i sprawdź 'Lithium Mode': wpisz '00' (dla protokołu CAN Pylontech/Deye) lub '12' (dla RS485).",
+                "KROK 4 (Awaryjne doładowanie): Jeśli bateria jest głęboko rozładowana i nie podaje komunikacji, przełącz tymczasowo w Battery Setting na 'Use Batt V' (praca napięciowa), zaznacz ładowanie z sieci 'Grid Charge', podładuj baterię przez 30 minut i przełącz z powrotem na 'Lithium'."
+            ]
+        }
+    },
+    "Falownik GoodWe (Serie SDT G2, MS, DNS, ET Plus Hybrydowy)": {
+        "Isolation Failure (Kod 16 - Błąd rezystancji izolacji DC < 1 MOhm)": {
+            "przyczyna": "Przebicie izolacji kabla solarnego, złącza MC4 lub ochronnika SPD po stronie DC do uziemienia.",
+            "kroki": [
+                "KROK 1: Wyłącz AC i DC. Wypnij wszystkie stringi z dolnej obudowy GoodWe.",
+                "KROK 2: Podłącz tylko String 1 i włącz falownik. Jeśli ruszy bez błędu – uszkodzenie jest na Stringu 2 (i odwrotnie).",
+                "KROK 3: Sprawdź wkładki ochronnika przepięć (SPD) DC w skrzynce zabezpieczeń oraz zmierz napięcie DC+ do PE i DC- do PE na uszkodzonym stringu.",
+                "KROK 4: Sprawdź czy przewód PE we wtyczce AC falownika jest dobrze dokręcony."
+            ]
+        },
+        "Vac Failure / Grid Overvoltage (Napięcie sieci poza zakresem > 253V AC)": {
+            "przyczyna": "Napięcie w sieci energetycznej przekroczyło 253V (średnia 10-min) lub 260V (chwilowe), co powoduje wyłączenie falownika.",
+            "kroki": [
+                "KROK 1 (Pomiar i styk): Zmierz napięcia L1-N, L2-N, L3-N. Dokręć wszystkie śruby w rozdzielnicy PV oraz rozdzielnicy głównej (szczególnie przewód neutralny N!).",
+                "KROK 2 (Aplikacja SolarGo): Połącz się z falownikiem przez aplikację SolarGo (Wi-Fi / Bluetooth). Zaloguj się jako Instalator (hasło domyślne: goodwe2010).",
+                "KROK 3 (Aktywacja mocy biernej Q(U)): Wejdź w Ustawienia Zaawansowane -> Regulacja Mocy Biernej (Reactive Power) -> włącz krzywą Q(U). Falownik zacznie dociążać sieć mocą bierną indukcyjną powyżej 248V i sam obniży napięcie na fazach o 3-6V!"
+            ]
+        },
+        "Utility Loss / No Grid (Brak sieci elektrycznej AC)": {
+            "kroki": [
+                "KROK 1: Wyłącz bezpiecznik AC w rozdzielnicy i wypnij dużą wtyczkę AC z dołu falownika GoodWe.",
+                "KROK 2: Rozkręć obudowę wtyczki AC i sprawdź, czy któryś z przewodów (L1, L2, L3, N) nie wysunął się z zacisku śrubowego (bardzo częsta przyczyna w złączach wtykowych GoodWe!).",
+                "KROK 3: Zmierz napięcie fazowe na stykach wtyczki (musi być 230V na każdej fazie względem N)."
+            ],
+            "przyczyna": "Brak napięcia na jednej lub wszystkich fazach na wtyczce AC falownika."
+        },
+        "Relay Check Failure (Błąd autotestu przekaźników sieciowych)": {
+            "przyczyna": "Zwarcie między przewodem N a PE w instalacji budynku lub sklejony przekaźnik na płycie AC falownika.",
+            "kroki": [
+                "KROK 1: Zmierz napięcie między N a PE oraz sprawdź czy w rozdzielnicy nie pomylono przewodu N z PE po stronie za wyłącznikiem różnicowoprądowym.",
+                "KROK 2: Odłącz całkowicie zasilanie AC i DC od falownika na pełne 5 minut i uruchom ponownie.",
+                "KROK 3: Jeśli napięcia L1/L2/L3-N wynoszą równo ~230V, a falownik przy odliczaniu stuka przekaźnikami i wyrzuca Relay Check Failure – uszkodzony przekaźnik wewnętrzny (zgłoś do serwisu GoodWe)."
+            ]
+        },
+        "PV Over Voltage (Zbyt wysokie napięcie wejściowe DC > 1000V/1100V)": {
+            "przyczyna": "Zbyt duża liczba paneli połączonych w jeden szereg (string) – w chłodny dzień napięcie przekracza limit falownika.",
+            "kroki": [
+                "KROK 1 (BHP!): Nie rozpinaj wtyczek MC4 pod obciążeniem! Wyłącz AC i hebel DC.",
+                "KROK 2: Zmierz miernikiem napięcie otwartego obwodu (Uoc) na wtyczkach MC4.",
+                "KROK 3: Jeśli napięcie przekracza 980V – rozdziel string na dwa wejścia MPPT lub odepnij 1-2 moduły z szeregu."
+            ]
+        },
+        "BMS Loss / Battery Comm Failure (Seria hybrydowa GoodWe ET)": {
+            "przyczyna": "Brak komunikacji CAN między falownikiem GoodWe ET a magazynem energii.",
+            "kroki": [
+                "KROK 1: Otwórz aplikację SolarGo -> Ustawienia baterii -> sprawdź czy wybrano dokładny model podłączonego magazynu energii.",
+                "KROK 2: Sprawdź czy użyto oryginalnego kabla komunikacyjnego CAN z kompletu falownika/baterii oraz czy na ostatnim module bateryjnym wpięta jest zworka terminująca (120 Ohm).",
+                "KROK 3: Zrestartuj kolumnę bateryjną oraz falownik."
+            ]
+        }
+    }
 }
 
 POSTAL_PREFIX_COORDS = {
@@ -207,8 +410,68 @@ POSTAL_PREFIX_COORDS = {
 }
 
 # ==========================================
-# 3. OBSŁUGA GOOGLE SHEETS, PROFILI KADROWYCH I BRANDINGU
+# 3. FUNKCJE POMOCNICZE (TELEFONY, DIAGNOSTYKA, GOOGLE SHEETS, LOGO)
 # ==========================================
+def extract_phone_numbers(raw_phone_str):
+    """Wyciąga wszystkie numery telefonów z tekstu (obsługuje 2 lub więcej numerów po przecinku/ukośniku/spacji)."""
+    if not raw_phone_str:
+        return []
+    text = str(raw_phone_str)
+    # Dzielimy po popularnych separatorach wielu numerów
+    parts = re.split(r'[;/,|lub]+', text)
+    phones = []
+    for p in parts:
+        digits = re.sub(r'[^\d+]', '', p)
+        if len(digits) >= 9:
+            phones.append(digits)
+    # Jeśli ktoś wpisał dwa 9-cyfrowe numery ciągiem ze spacją bez ukośnika (np. "500100200 600200300")
+    if len(phones) == 1 and len(re.sub(r'\D', '', phones[0])) >= 18:
+        all_d = re.sub(r'\D', '', phones[0])
+        phones = [all_d[i:i+9] for i in range(0, len(all_d), 9) if len(all_d[i:i+9]) == 9]
+    return list(dict.fromkeys(phones))
+
+def render_phone_and_sms_buttons(raw_phone_str, address_str, key_prefix=""):
+    """Generuje dla każdego wykrytego numeru parę przycisków: 📞 Zadzwoń oraz 💬 SMS."""
+    phones = extract_phone_numbers(raw_phone_str)
+    if not phones:
+        st.markdown("📞 **Telefon:** `Brak numeru w bazie`")
+        return
+
+    sms_default = f"Dzien dobry, tu serwis PROMAG OZE. Kontaktuje sie w sprawie zgloszenia serwisowego pod adresem {address_str}."
+    sms_encoded = sms_default.replace(" ", "%20")
+
+    for idx, ph in enumerate(phones, 1):
+        label_suffix = f" ({idx})" if len(phones) > 1 else ""
+        c_call, c_sms = st.columns(2)
+        with c_call:
+            st.link_button(f"📞 Zadzwoń{label_suffix}: {ph}", f"tel:{ph}", use_container_width=True)
+        with c_sms:
+            st.link_button(f"💬 SMS{label_suffix}: {ph}", f"sms:{ph}?body={sms_encoded}", use_container_width=True)
+
+def render_diagnostic_wizard(default_install_type="", ticket_key="global"):
+    """Wyświetla interaktywną ścieżkę diagnostyczną i bazę kodów błędów krok po kroku."""
+    st.markdown('<div class="diag-box">', unsafe_allow_html=True)
+    st.markdown("### 🩺 Interaktywna Ścieżka Diagnostyczna i Kody Błędów")
+    st.caption("Wybierz urządzenie oraz kod błędu lub objaw z wyświetlacza, aby otrzymać dokładną procedurę pomiarową i naprawczą krok po kroku.")
+
+    cat_options = list(DIAGNOSTIC_DB.keys())
+    default_idx = 0
+    if "fotowoltaika" in str(default_install_type).lower() or "pv" in str(default_install_type).lower():
+        default_idx = 1
+
+    sel_cat = st.selectbox("1️⃣ Wybierz markę / typ urządzenia:", cat_options, index=default_idx, key=f"diag_cat_{ticket_key}")
+    codes_dict = DIAGNOSTIC_DB[sel_cat]
+    sel_code = st.selectbox("2️⃣ Wybierz kod błędu lub objaw usterki:", list(codes_dict.keys()), key=f"diag_code_{ticket_key}")
+
+    diag_data = codes_dict[sel_code]
+    st.warning(f"**🔍 Przyczyna techniczna:** {diag_data['przyczyna']}")
+    st.markdown("#### 🛠️ Procedura diagnostyczna i naprawcza (zrób po kolei):")
+    for step_txt in diag_data["kroki"]:
+        st.markdown(f"- {step_txt}")
+
+    st.markdown('</div>', unsafe_allow_html=True)
+    return f"[{sel_cat} -> {sel_code}]"
+
 def get_gsheet_client():
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
@@ -305,10 +568,10 @@ def render_brand_logo(max_width=240, centered=False):
 # ==========================================
 REQUIRED_COLS = [
     "ID_Zgloszenia", "Klient", "Adres", "Kod_Pocztowy", "Miasto", "Telefon",
-    "Typ_Instalacji", "Opis_Zgloszenia", "Priorytet_Krytyczny", "Typ_Serwisu",
+    "Typ_Instalacji", "Opis_Zgloszenia", "Wymagany_Przeglad", "Priorytet_Krytyczny", "Typ_Serwisu",
     "Serwisant", "Data_Planowana", "Status", "Naprawione_1_Wizyta",
     "Kwota_Przewidywana", "Kwota_Koncowa", "Czas_Pracy_Min",
-    "Zalecenia_Klienta", "Notatka_Serwisanta", "Data_Zamkniecia", "Podpis_Zlozony"
+    "Zalecenia_Klienta", "Notatka_Serwisanta", "Wyniki_Przegladu", "Data_Zamkniecia", "Podpis_Zlozony"
 ]
 
 NUMERIC_COLS = ["Kwota_Przewidywana", "Kwota_Koncowa", "Czas_Pracy_Min"]
@@ -367,6 +630,11 @@ def ensure_columns(df):
                 df[rc] = [f"ZGL-{i+1001}" for i in range(len(df))]
             elif rc == "Status":
                 df[rc] = "Nowe"
+            elif rc == "Wymagany_Przeglad":
+                df[rc] = [
+                    "Tak" if "przegl" in str(r.get("Opis_Zgloszenia", "")).lower() else "Nie"
+                    for _, r in df.iterrows()
+                ]
             elif rc == "Priorytet_Krytyczny":
                 df[rc] = "Nie"
             elif rc == "Typ_Serwisu":
@@ -398,6 +666,10 @@ def ensure_columns(df):
     if empty_status_mask.any():
         df.loc[empty_status_mask, "Status"] = "Nowe"
 
+    empty_przeglad_mask = df["Wymagany_Przeglad"].str.strip() == ""
+    if empty_przeglad_mask.any():
+        df.loc[empty_przeglad_mask, "Wymagany_Przeglad"] = "Nie"
+
     return df.reset_index(drop=True)
 
 def load_tickets():
@@ -425,22 +697,22 @@ def load_tickets():
         df = pd.DataFrame([
             {
                 "ID_Zgloszenia": "ZGL-1001", "Klient": "Jan Kowalski", "Adres": "ul. Słoneczna 12",
-                "Kod_Pocztowy": "05-800", "Miasto": "Pruszków", "Telefon": "500100200",
-                "Typ_Instalacji": "Pompa Ciepła + PV", "Opis_Zgloszenia": "Brak grzania CO - błąd sprężarki (Awaria)",
-                "Priorytet_Krytyczny": "Tak", "Typ_Serwisu": "Płatny", "Serwisant": "Leszek",
+                "Kod_Pocztowy": "05-800", "Miasto": "Pruszków", "Telefon": "500100200 / 600999888",
+                "Typ_Instalacji": "Pompa Ciepła Argom", "Opis_Zgloszenia": "Brak grzania CO - błąd E03 przepływu (Awaria)",
+                "Wymagany_Przeglad": "Nie", "Priorytet_Krytyczny": "Tak", "Typ_Serwisu": "Płatny", "Serwisant": "Leszek",
                 "Data_Planowana": str(datetime.date.today()), "Status": "Zaplanowane",
                 "Naprawione_1_Wizyta": "Tak", "Kwota_Przewidywana": 850.0, "Kwota_Koncowa": 0.0,
-                "Czas_Pracy_Min": 0.0, "Zalecenia_Klienta": "", "Notatka_Serwisanta": "",
+                "Czas_Pracy_Min": 0.0, "Zalecenia_Klienta": "", "Notatka_Serwisanta": "", "Wyniki_Przegladu": "",
                 "Data_Zamkniecia": "", "Podpis_Zlozony": "Nie"
             },
             {
                 "ID_Zgloszenia": "ZGL-1002", "Klient": "Anna Nowak", "Adres": "ul. Lipowa 4",
                 "Kod_Pocztowy": "05-840", "Miasto": "Brwinów", "Telefon": "600200300",
-                "Typ_Instalacji": "Pompa Ciepła", "Opis_Zgloszenia": "Przegląd roczny przed sezonem + czyszczenie filtrów",
-                "Priorytet_Krytyczny": "Nie", "Typ_Serwisu": "Płatny", "Serwisant": "Leszek",
+                "Typ_Instalacji": "Pompa Ciepła Argom + PV Deye", "Opis_Zgloszenia": "Przegląd roczny przed sezonem + badanie glikolu",
+                "Wymagany_Przeglad": "Tak", "Priorytet_Krytyczny": "Nie", "Typ_Serwisu": "Płatny", "Serwisant": "Leszek",
                 "Data_Planowana": str(datetime.date.today()), "Status": "Zaplanowane",
                 "Naprawione_1_Wizyta": "Tak", "Kwota_Przewidywana": 650.0, "Kwota_Koncowa": 0.0,
-                "Czas_Pracy_Min": 0.0, "Zalecenia_Klienta": "", "Notatka_Serwisanta": "",
+                "Czas_Pracy_Min": 0.0, "Zalecenia_Klienta": "", "Notatka_Serwisanta": "", "Wyniki_Przegladu": "",
                 "Data_Zamkniecia": "", "Podpis_Zlozony": "Nie"
             }
         ])
@@ -757,19 +1029,18 @@ if st.session_state["logged_role"] == "serwisant":
 
     with m_col3:
         st.write("")
-        if st.button("📚 BAZA WIEDZY (Schematy / Kody błędów)"):
+        if st.button("📚 BAZA WIEDZY / KODY BŁĘDÓW"):
             st.session_state["show_kb"] = not st.session_state.get("show_kb", False)
 
     progress_val = min(1.0, float(metrics["monthly_revenue"] / COMMISSION_TIER_2))
     st.progress(progress_val, text=f"Postęp obrotu w tym miesiącu: {metrics['monthly_revenue']:,.0f} zł / 30 000 zł ({metrics['active_rate_str']})")
 
     if st.session_state.get("show_kb", False):
-        with st.expander("📚 Moduł Bazy Wiedzy Technicznej OZE", expanded=True):
-            st.info("W tym miejscu pojawią się kody błędów falowników i pomp ciepła, instrukcje serwisowe oraz listy kontrolne przeglądów (moduł w przygotowaniu).")
+        with st.expander("📚 Baza Wiedzy Technicznej OZE (Deye / GoodWe / Argom)", expanded=True):
+            render_diagnostic_wizard(default_install_type="Pompa Ciepła Argom", ticket_key="top_kb")
 
     st.divider()
 
-    # Filtrowanie niezamkniętych zleceń przypisanych do tego serwisanta
     my_tickets = df[(df["Serwisant"] == tech_name) & (df["Status"] != "Zakończone")].copy()
 
     if my_tickets.empty:
@@ -777,7 +1048,6 @@ if st.session_state["logged_role"] == "serwisant":
         st.session_state["active_day"] = None
         st.session_state["active_ticket_id"] = None
     else:
-        # Uporządkowanie daty planowanej (jeśli jakieś przypisane ręcznie zgłoszenie nie ma daty, przypisujemy dzisiaj)
         today_str = str(datetime.date.today())
         my_tickets["Data_Grupa"] = my_tickets["Data_Planowana"].astype(str).str.strip()
         my_tickets.loc[my_tickets["Data_Grupa"] == "", "Data_Grupa"] = today_str
@@ -822,10 +1092,11 @@ if st.session_state["logged_role"] == "serwisant":
 
                         with st.expander(f"👁️ Podgląd punktów w trasie na dzień {day_str} ({pts_count})"):
                             for idx_pt, (_, r_pt) in enumerate(day_cluster.iterrows(), 1):
-                                crit_tag = " 🔥 [AWARIA / KRYTYCZNE]" if r_pt["Priorytet_Krytyczny"] == "Tak" else ""
+                                crit_tag = " 🔥 [AWARIA]" if r_pt["Priorytet_Krytyczny"] == "Tak" else ""
+                                prz_tag = " 🔍 [PRZEGLĄD]" if str(r_pt.get("Wymagany_Przeglad", "")) == "Tak" else ""
                                 st.markdown(
                                     f"**{idx_pt}. {r_pt['Miasto']}** ({r_pt['Kod_Pocztowy']}), {r_pt['Adres']} – "
-                                    f"*{r_pt['Typ_Instalacji']}*{crit_tag}"
+                                    f"*{r_pt['Typ_Instalacji']}*{crit_tag}{prz_tag}"
                                 )
 
                     with c_day_btn:
@@ -837,7 +1108,7 @@ if st.session_state["logged_role"] == "serwisant":
                             st.rerun()
 
         # =========================================================================
-        # ETAP 2: AKTYWNY DZIEŃ – WYBÓR KLIENTA Z DANEGO DNIA (DECUDUJE SERWISANT)
+        # ETAP 2: AKTYWNY DZIEŃ – WYBÓR KLIENTA Z DANEGO DNIA
         # =========================================================================
         elif st.session_state["active_day"] is not None and st.session_state["active_ticket_id"] is None:
             act_day = st.session_state["active_day"]
@@ -846,7 +1117,7 @@ if st.session_state["logged_role"] == "serwisant":
             head_c1, head_c2 = st.columns([2.2, 1])
             with head_c1:
                 st.subheader(f"🚚 Aktywny dzień pracy: {act_day}")
-                st.caption("Kolejność i godziny wizyt ustalasz samodzielnie w zależności od dostępności klientów. Wybierz klienta i kliknij **Rozpocznij zlecenie**.")
+                st.caption("Kolejność i godziny wizyt ustalasz samodzielnie. Zadzwoń lub napisz SMS do klienta, a po przyjeździe kliknij **Rozpocznij zlecenie**.")
             with head_c2:
                 if st.button("⬅️ Zmień dzień / Wróć do harmonogramu"):
                     st.session_state["active_day"] = None
@@ -862,24 +1133,24 @@ if st.session_state["logged_role"] == "serwisant":
                 for idx_card, (t_idx, t_row) in enumerate(day_tickets.iterrows(), 1):
                     t_id = t_row["ID_Zgloszenia"]
                     is_crit = (str(t_row["Priorytet_Krytyczny"]) == "Tak")
+                    is_insp = (str(t_row.get("Wymagany_Przeglad", "Nie")) == "Tak")
                     status_badge = "🟡 W TRAKCIE REALIZACJI" if t_row["Status"] == "W trakcie" else "⏳ OCZEKUJE NA WIZYTĘ"
                     crit_badge = " 🔥 KRYTYCZNE / AWARIA" if is_crit else ""
+                    insp_badge = " 🔍 WYMAGANY PRZEGLĄD" if is_insp else ""
 
                     with st.container(border=True):
-                        st.markdown(f"#### Punkt #{idx_card}: **{t_row['Miasto']}** – {t_row['Klient']} `{status_badge}` {crit_badge}")
-                        col_d1, col_d2, col_d3 = st.columns([1.5, 1.2, 1.2])
+                        st.markdown(f"#### Punkt #{idx_card}: **{t_row['Miasto']}** – {t_row['Klient']} `{status_badge}`{crit_badge}{insp_badge}")
+                        col_d1, col_d2, col_d3 = st.columns([1.4, 1.4, 1.1])
 
                         with col_d1:
                             st.markdown(f"📍 **Adres:** `{t_row['Kod_Pocztowy']} {t_row['Miasto']}, {t_row['Adres']}`")
-                            st.markdown(f"🔧 **Instalacja:** {t_row['Typ_Instalacji']} ({t_row['Typ_Serwisu']})")
+                            st.markdown(f"🔧 **Urządzenie:** {t_row['Typ_Instalacji']} ({t_row['Typ_Serwisu']})")
                             st.markdown(f"📝 **Zgłoszenie:** {t_row['Opis_Zgloszenia']}")
 
                         with col_d2:
-                            st.markdown(f"📞 **Telefon:** [{t_row['Telefon']}](tel:{t_row['Telefon']})")
+                            render_phone_and_sms_buttons(t_row["Telefon"], f"{t_row['Miasto']}, {t_row['Adres']}", key_prefix=f"day_{t_id}")
                             maps_q = f"{t_row['Adres']} {t_row['Kod_Pocztowy']} {t_row['Miasto']}".replace(" ", "+")
-                            st.link_button("🗺️ Nawiguj (Google Maps)", f"https://www.google.com/maps/search/?api=1&query={maps_q}")
-                            sms_txt = f"Dzien dobry, tu serwis PROMAG OZE. Dzisiaj realizujemy zgloszenie w Państwa okolicy ({t_row['Adres']}). O ktorej godzinie bedzie Pan/Pani w domu?"
-                            st.link_button("💬 SMS: Pytanie o godzinę", f"sms:{t_row['Telefon']}?body={sms_txt.replace(' ', '%20')}")
+                            st.link_button("🗺️ Nawiguj (Google Maps)", f"https://www.google.com/maps/search/?api=1&query={maps_q}", use_container_width=True)
 
                         with col_d3:
                             st.markdown(f"💰 **Szacowana kwota:** `{float(t_row['Kwota_Przewidywana']):,.0f} zł`")
@@ -891,7 +1162,7 @@ if st.session_state["logged_role"] == "serwisant":
                                 st.rerun()
 
         # =========================================================================
-        # ETAP 3: AKTYWNE ZLECENIE U WYBRANEGO KLIENTA (ROZLICZENIE + PROTOKÓŁ)
+        # ETAP 3: AKTYWNE ZLECENIE (DIAGNOSTYKA + PROTOKÓŁ PRZEGLĄDU + ROZLICZENIE)
         # =========================================================================
         elif st.session_state["active_ticket_id"] is not None:
             selected_id = st.session_state["active_ticket_id"]
@@ -913,23 +1184,39 @@ if st.session_state["logged_role"] == "serwisant":
                     st.session_state["active_ticket_id"] = None
                     st.rerun()
 
-            c_info1, c_info2 = st.columns([1.3, 1])
+            c_info1, c_info2 = st.columns([1.3, 1.2])
             with c_info1:
                 st.markdown(f"### 👤 Klient: **{t_row['Klient']}**")
                 st.markdown(f"📍 **Adres:** `{t_row['Kod_Pocztowy']} {t_row['Miasto']}, {t_row['Adres']}`")
-                st.markdown(f"📞 **Telefon:** [{t_row['Telefon']}](tel:{t_row['Telefon']})")
-                st.markdown(f"🔧 **Instalacja:** {t_row['Typ_Instalacji']} | **Typ:** `{t_row['Typ_Serwisu']}`")
+                st.markdown(f"🔧 **Urządzenie:** **{t_row['Typ_Instalacji']}** | **Typ:** `{t_row['Typ_Serwisu']}`")
                 st.markdown(f"📝 **Opis zgłoszenia:** {t_row['Opis_Zgloszenia']}")
 
             with c_info2:
+                render_phone_and_sms_buttons(t_row["Telefon"], f"{t_row['Miasto']}, {t_row['Adres']}", key_prefix=f"act_{selected_id}")
                 maps_query = f"{t_row['Adres']} {t_row['Kod_Pocztowy']} {t_row['Miasto']}".replace(" ", "+")
-                st.link_button("🗺️ Nawiguj w Google Maps", f"https://www.google.com/maps/search/?api=1&query={maps_query}")
-                sms_body = f"Dzien dobry, tu serwis PROMAG OZE. Jestem w drodze pod adres {t_row['Adres']}."
-                st.link_button("💬 Wyślij SMS: Jestem w drodze", f"sms:{t_row['Telefon']}?body={sms_body.replace(' ', '%20')}")
+                st.link_button("🗺️ Nawiguj w Google Maps", f"https://www.google.com/maps/search/?api=1&query={maps_query}", use_container_width=True)
 
             st.divider()
 
-            st.subheader("🧾 Rozliczenie wizyty i wykonanych prac")
+            # --- 1. ŚCIEŻKA DIAGNOSTYCZNA DLA TEGO URZĄDZENIA ---
+            diag_col1, diag_col2 = st.columns([1.5, 1])
+            with diag_col1:
+                st.markdown("#### 🩺 Nieoczywista usterka lub kod błędu na urządzeniu?")
+            with diag_col2:
+                if st.button("🩺 URUCHOM ŚCIEŻKĘ DIAGNOSTYCZNĄ KROK PO KROKU", key=f"btn_diag_{selected_id}"):
+                    st.session_state[f"open_diag_{selected_id}"] = not st.session_state.get(f"open_diag_{selected_id}", False)
+
+            selected_diag_summary = ""
+            if st.session_state.get(f"open_diag_{selected_id}", False):
+                selected_diag_summary = render_diagnostic_wizard(
+                    default_install_type=str(t_row["Typ_Instalacji"]),
+                    ticket_key=selected_id
+                )
+
+            st.divider()
+
+            # --- 2. KALKULATOR CZYNNOŚCI I ROZLICZENIE ---
+            st.subheader("🧾 Wykonane czynności i rozliczenie")
             calc_c1, calc_c2 = st.columns(2)
             with calc_c1:
                 selected_services = st.multiselect(
@@ -954,25 +1241,172 @@ if st.session_state["logged_role"] == "serwisant":
                     horizontal=True
                 )
 
+            # --- 3. PROTOKÓŁ PRZEGLĄDU URZĄDZENIA + POMIARY GLIKOLU (REFRAKTOMETR + PASEK PH) I WALIDACJA NA ŻYWO ---
+            is_inspection_needed = (
+                str(t_row.get("Wymagany_Przeglad", "Nie")) == "Tak"
+                or "przegl" in str(t_row.get("Opis_Zgloszenia", "")).lower()
+                or any("Przegląd" in s for s in selected_services)
+            )
+
+            inspection_summary_lines = []
+            auto_recommendations_from_inspection = []
+
+            st.markdown("#### 🔍 Protokół Przeglądu Technicznego Urządzenia")
+            enable_inspection_form = st.checkbox(
+                "Wypełnij protokół pomiarowy przeglądu instalacji (z automatyczną kontrolą norm)",
+                value=is_inspection_needed,
+                key=f"chk_insp_{selected_id}"
+            )
+
+            if enable_inspection_form:
+                inst_type_lower = str(t_row["Typ_Instalacji"]).lower()
+                show_pc = ("pompa" in inst_type_lower or "pc" in inst_type_lower or "argom" in inst_type_lower or "inne" in inst_type_lower)
+                show_pv = ("pv" in inst_type_lower or "foto" in inst_type_lower or "deye" in inst_type_lower or "goodwe" in inst_type_lower or "magazyn" in inst_type_lower)
+                if not show_pc and not show_pv:
+                    show_pc, show_pv = True, True
+
+                with st.container(border=True):
+                    if show_pc:
+                        st.markdown("##### 🌡️ A. Pomiary Pompy Ciepła + Badanie Glikolu (Refraktometr & Pasek pH)")
+                        with st.expander("ℹ️ Jak poprawnie pobrać próbkę glikolu na refraktometr i pasek pH? (Instrukcja)", expanded=False):
+                            st.markdown("""
+                            1. **Pobranie próbki:** Upuść 2–3 krople płynu z zaworu do czystego naczynia (nie bierz pierwszej kropli z samego zaworu, bo bywa zabrudzona smarem lub osadem).
+                            2. **Refraktometr:** Przetrzyj pryzmat czystą chusteczką, nanieś kroplę płynu i zamknij płytkę tak, aby nie było pęcherzyków powietrza. Odczytaj granicę niebiesko-białą na skali **Propylene Glycol (°C)**.
+                            3. **Pasek pH:** Zanurz pasek w próbce na 2 sekundy, strzepnij nadmiar płynu i po 15 sekundach porównaj kolor ze skalą na opakowaniu.
+                            """)
+
+                        pc1, pc2, pc3 = st.columns(3)
+                        with pc1:
+                            p_co_bar = st.number_input("Ciśnienie statyczne układu CO [bar] (Norma: 1.2 - 2.2):", min_value=0.0, max_value=6.0, value=1.5, step=0.1, key=f"p_co_{selected_id}")
+                            p_naczynie_bar = st.number_input("Ciśnienie naczynia przeponowego [bar] (Norma: 0.8 - 1.5):", min_value=0.0, max_value=4.0, value=1.2, step=0.1, key=f"p_nacz_{selected_id}")
+                        with pc2:
+                            t_zas = st.number_input("Temp. zasilania CO [°C]:", min_value=10.0, max_value=80.0, value=35.0, step=0.5, key=f"t_zas_{selected_id}")
+                            t_pow = st.number_input("Temp. powrotu CO [°C]:", min_value=10.0, max_value=80.0, value=30.0, step=0.5, key=f"t_pow_{selected_id}")
+                            delta_t = round(abs(t_zas - t_pow), 1)
+                            st.caption(f"Wyliczona Delta T (ΔT): **{delta_t} °C** (Norma: 3.0 - 8.0 °C)")
+                        with pc3:
+                            glikol_temp = st.number_input("Temp. krzepnięcia glikolu (Refraktometr) [°C] (Norma: -15 do -30):", min_value=-50.0, max_value=0.0, value=-22.0, step=1.0, key=f"glik_t_{selected_id}")
+                            glikol_ph = st.number_input("Odczyn pH zładu (Pasek pH) (Norma: 7.5 - 9.0):", min_value=3.0, max_value=13.0, value=8.0, step=0.1, key=f"glik_ph_{selected_id}")
+
+                        pc_c4, pc_c5 = st.columns(2)
+                        with pc_c4:
+                            filtr_stan = st.selectbox("Stan filtra siatkowego i magnetycznego:", ["Czysty / Wyczyyszczono podczas przeglądu", "Silnie zanieczyszczony magnetytem (wymaga płukania)"], key=f"f_stan_{selected_id}")
+                        with pc_c5:
+                            fgaz_szczelnosc = st.selectbox("Kontrola szczelności układu chłodniczego i tacy skroplin:", ["Szczelny, odpływ skroplin drożny", "Wykryto nieszczelność / niedrożny odpływ"], key=f"fgaz_{selected_id}")
+
+                        # --- WALIDACJA PARAMETRÓW POMPY CIEPŁA NA ŻYWO ---
+                        if p_co_bar < 1.1:
+                            st.error("🚨 **ODCHYLENIE OD NORMY (Ciśnienie CO < 1.1 bar):** Ryzyko błędu przepływu (E03/E08) oraz zapowietrzenia i kawitacji pompy obiegowej!\n\n"
+                                     "**Procedura naprawy:** Sprawdź szczelność śrubunków, zweryfikuj ciśnienie wstępne naczynia przeponowego i dopuść zładu do wartości 1.5 - 1.8 bar.")
+                            auto_recommendations_from_inspection.append(f"Skorygowano ciśnienie układu CO z {p_co_bar} bar do normy roboczej.")
+                        elif p_co_bar > 2.4:
+                            st.error("🚨 **ODCHYLENIE OD NORMY (Ciśnienie CO > 2.4 bar):** Ryzyko otwarcia zaworu bezpieczeństwa (3 bar) i zalania kotłowni!\n\n"
+                                     "**Procedura naprawy:** Sprawdź naczynie przeponowe (pęknięta membrana lub brak powietrza pod wentylem) oraz szczelność zaworu dopuszczającego wodę. Upuść ciśnienie do 1.5 bar.")
+
+                        if delta_t > 8.5:
+                            st.error(f"🚨 **ODCHYLENIE OD NORMY (Delta T = {delta_t}°C > 8.5°C):** Zbyt wolny odbiór ciepła ze skraplacza (zdławiony przepływ)! Ryzyko błędu wysokiego ciśnienia HP (E01).\n\n"
+                                     "**Procedura naprawy:** Wyczyść filtr siatkowy i separator magnetyczny, odkręć przepływomierze (rotametry) na rozdzielaczu i zwiększ bieg pompy obiegowej.")
+                        elif delta_t < 2.0:
+                            st.warning(f"⚠️ **UWAGA (Delta T = {delta_t}°C < 2.0°C):** Zbyt szybki przepływ krótki (tzw. podmieszanie na buforze lub otwarty bypass) albo sprężarka nie pracuje z pełną mocą.")
+
+                        if glikol_temp > -15.0:
+                            st.error(f"🚨 **ALARM GLIKOLOWY (Krzepnięcie = {glikol_temp}°C, norma minimum -15°C):** Zbyt rozcieńczony glikol! Przy awarii zasilania na mrozie dojdzie do zamarznięcia i rozerwania wymiennika płytowego!\n\n"
+                                     "**Procedura naprawy krok po kroku:**\n"
+                                     "1. Zakaz dolewania czystej wody do układu!\n"
+                                     "2. Podłącz pompę serwisową z koncentratem glikolu propylenowego.\n"
+                                     "3. Upuść część rozcieńczonego zładu i wtłocz koncentrat, wymieszaj obieg przez 15 minut i zmierz ponownie refraktometrem aż uzyskasz min. -18°C do -25°C.")
+                            auto_recommendations_from_inspection.append(f"Wykryto zbyt słabe stężenie glikolu ({glikol_temp}°C) - wymagane dosycenie koncentratem glikolu propylenowego do min. -20°C.")
+                        elif glikol_temp < -33.0:
+                            st.warning(f"⚠️ **OSTRZEŻENIE GLIKOLOWE (Krzepnięcie = {glikol_temp}°C < -33°C):** Zbyt gęsty glikol! Duża lepkość płynu dławi pompę obiegową (ryzyko błędu przepływu E03) i pogarsza wymianę ciepła.\n\n"
+                                       "**Procedura naprawy:** Upuść niewielką ilość zładu, dopuść wody demineralizowanej i wymieszaj układ do uzyskania ok. -22°C.")
+
+                        if glikol_ph < 7.0:
+                            st.error(f"🚨 **ALARM CHEMICZNY pH (pH = {glikol_ph} < 7.0):** Glikol uległ zakwaszeniu (degradacja termiczna)! Płyn stracił właściwości antykorozyjne i trawi wymiennik lutowany miedzią oraz uszczelnienia!\n\n"
+                                     "**Procedura naprawy krok po kroku:**\n"
+                                     "1. Zleć całkowite spuszczenie starego glikolu z układu.\n"
+                                     "2. Wypłucz instalację czystą wodą, wyczyść separator magnetyczny.\n"
+                                     "3. Napełnij układ świeżym glikolem propylenowym z pakietem inhibitorów korozji (pH 7.5 - 9.0).")
+                            auto_recommendations_from_inspection.append(f"Wykryto zakwaszenie czynnika grzewczego (pH {glikol_ph}) - zalecana pełna wymiana glikolu i płukanie układu.")
+                        elif glikol_ph > 9.5:
+                            st.warning(f"⚠️ **OSTRZEŻENIE pH (pH = {glikol_ph} > 9.5):** Odczyn zbyt zasadowy (ryzyko korozji elementów aluminiowych i mosiężnych). Zastosuj korektor pH lub wymień część zładu na wodę demineralizowaną.")
+
+                        inspection_summary_lines.append(
+                            f"POMPA CIEPŁA: Ciśnienie CO={p_co_bar} bar, Naczynie={p_naczynie_bar} bar, Delta T={delta_t}°C (Zas:{t_zas}°C/Pow:{t_pow}°C), "
+                            f"Glikol Refraktometr={glikol_temp}°C, Odczyn pH={glikol_ph}, Filtr={filtr_stan}, Układ={fgaz_szczelnosc}."
+                        )
+
+                    if show_pv:
+                        st.markdown("##### ☀️ B. Pomiary Instalacji Fotowoltaicznej (PV) i Magazynu Energii")
+                        pv1, pv2, pv3 = st.columns(3)
+                        with pv1:
+                            r_iso = st.number_input("Rezystancja izolacji stringów Riso [MOhm] (Norma >= 1.0):", min_value=0.0, max_value=500.0, value=50.0, step=0.5, key=f"riso_{selected_id}")
+                            u_pe_ohm = st.number_input("Rezystancja uziemienia [Ohm] (Norma <= 10.0):", min_value=0.1, max_value=100.0, value=4.5, step=0.5, key=f"upe_{selected_id}")
+                        with pv2:
+                            v_l1 = st.number_input("Napięcie fazy L1-N [V] (Norma: 207-253V):", min_value=0.0, max_value=300.0, value=234.0, step=1.0, key=f"vl1_{selected_id}")
+                            v_l2 = st.number_input("Napięcie fazy L2-N [V] (Norma: 207-253V):", min_value=0.0, max_value=300.0, value=235.0, step=1.0, key=f"vl2_{selected_id}")
+                            v_l3 = st.number_input("Napięcie fazy L3-N [V] (Norma: 207-253V):", min_value=0.0, max_value=300.0, value=234.0, step=1.0, key=f"vl3_{selected_id}")
+                        with pv3:
+                            styki_stan = st.selectbox("Kontrola dokręcenia zacisków AC/DC i SPD:", ["Wszystkie styki dokręcone, SPD sprawne", "Wykryto luźne styki / ślady przegrzania"], key=f"styki_{selected_id}")
+                            bms_stan = st.selectbox("Stan Magazynu Energii / SOH:", ["Nie dotyczy / Brak magazynu", "Sprawny (SOH > 90%, komunikacja CAN OK)", "Wymaga diagnostyki BMS"], key=f"bms_st_{selected_id}")
+
+                        if r_iso < 1.0:
+                            st.error(f"🚨 **ALARM IZOLACJI DC (Riso = {r_iso} MOhm < 1.0 MOhm):** Przebicie strony DC do uziemienia (błąd F24 w Deye / Isolation Failure w GoodWe)!\n\n"
+                                     "**Procedura naprawy:** Wypnij wkładki ochronnika SPD DC i sprawdź czy Riso wraca do normy. Jeśli nie – rozepnij stringi i szukaj zawilgoconego złącza MC4 lub przetartego kabla pod konstrukcją na dachu.")
+                            auto_recommendations_from_inspection.append(f"Niska rezystancja izolacji DC ({r_iso} MOhm) - wymagana weryfikacja złączy MC4 i ochronników SPD.")
+
+                        if max(v_l1, v_l2, v_l3) >= 251.0:
+                            st.warning(f"⚠️ **WYSOKIE NAPIĘCIE SIECI AC ({max(v_l1, v_l2, v_l3)} V):** Napięcie bliskie progu wyłączenia falownika (253V)!\n\n"
+                                       "**Procedura naprawy:** Dokręć zaciski przewodu N i faz w rozdzielnicy. Włącz w ustawieniach falownika Deye/GoodWe regulację mocy biernej Q(U).")
+                            auto_recommendations_from_inspection.append("Aktywowano charakterystykę mocy biernej Q(U) ze względu na podwyższone napięcie sieci AC.")
+
+                        if u_pe_ohm > 10.0:
+                            st.error(f"🚨 **ODCHYLENIE UZIEMIENIA ({u_pe_ohm} Ohm > 10 Ohm):** Zbyt wysoka rezystancja uziomu! Ryzyko błędu F08 oraz braku skuteczności ochronników przepięć SPD.\n\n"
+                                     "**Procedura naprawy:** Sprawdź połączenie śrubowe w złączu kontrolnym, oczyść bednarkę z korozji i rozbuduj uziom szpilkowy.")
+
+                        if "luźne" in styki_stan.lower():
+                            st.error("🚨 **LUŹNE STYKI / PRZEGRZANIE W ROZDZIELNICY:** Natychmiast dokręć wszystkie zaciski śrubowe wyłączników nadprądowych, RCD i bloków rozdzielczych. Jeśli aparat modułowy ma nadtopioną obudowę – wymień go na nowy!")
+
+                        inspection_summary_lines.append(
+                            f"INSTALACJA PV: Riso={r_iso} MOhm, Uziemienie={u_pe_ohm} Ohm, Napięcia AC=({v_l1}/{v_l2}/{v_l3} V), "
+                            f"Rozdzielnica={styki_stan}, Magazyn={bms_stan}."
+                        )
+
+            inspection_full_text = " | ".join(inspection_summary_lines)
+
             base_sum = sum(CENNIK_BAZOWY[s] for s in selected_services)
             if base_sum == 0 and typ_serwisu_real == "Płatny":
                 base_sum = float(t_row["Kwota_Przewidywana"])
             auto_total = 0.0 if typ_serwisu_real == "Gwarancyjny" else (base_sum + extra_parts + (km_dojazd * 2.5))
 
             final_price = st.number_input("💰 Kwota końcowa do rozliczenia (zł brutto):", min_value=0.0, step=50.0, value=float(auto_total))
-            internal_note = st.text_area("Notatka wewnętrzna dla Koordynatora (niewidoczna dla klienta):", value=str(t_row["Notatka_Serwisanta"]))
 
+            default_internal_note = str(t_row["Notatka_Serwisanta"])
+            if selected_diag_summary and selected_diag_summary not in default_internal_note:
+                default_internal_note = f"{default_internal_note} Diagnostyka: {selected_diag_summary}".strip()
+
+            internal_note = st.text_area("Notatka wewnętrzna dla Koordynatora (niewidoczna dla klienta):", value=default_internal_note)
+
+            # --- 4. PROTOKÓŁ DLA KLIENTA Z LOGO FIRMY I PODPISEM ---
             st.markdown('<div class="client-box">', unsafe_allow_html=True)
             render_brand_logo(max_width=220, centered=False)
-            st.markdown("### 📄 Protokół Odbioru Serwisu i Zalecenia dla Klienta")
+            st.markdown("### 📄 Protokół Odbioru Serwisu / Przeglądu i Zalecenia dla Klienta")
             st.markdown(f"**Klient:** {t_row['Klient']} | **Adres:** {t_row['Kod_Pocztowy']} {t_row['Miasto']}, {t_row['Adres']} | **Data:** {datetime.date.today()}")
+            st.markdown(f"**Urządzenie:** {t_row['Typ_Instalacji']}")
+
+            if inspection_full_text:
+                st.info(f"**📊 Wyniki pomiarów z przeglądu:**\n{inspection_full_text}")
+
+            default_client_rec = str(t_row["Zalecenia_Klienta"]).strip()
+            if auto_recommendations_from_inspection and not default_client_rec:
+                default_client_rec = " ".join(auto_recommendations_from_inspection)
+
             client_recommendations = st.text_area(
                 "Zalecenia po-serwisowe dla Klienta (widoczne na protokole):",
-                value=str(t_row["Zalecenia_Klienta"]),
-                placeholder="Wpisz zalecenia dotyczące eksploatacji instalacji, ciśnienia w układzie lub terminu kolejnego przeglądu..."
+                value=default_client_rec,
+                placeholder="Wpisz zalecenia dotyczące eksploatacji instalacji, stężenia glikolu, ciśnienia w układzie lub terminu kolejnego przeglądu..."
             )
             st.markdown(f"#### Do zapłaty / Rozliczenie: **{final_price:,.2f} zł** ({typ_serwisu_real})")
-            st.markdown("**Podpis Klienta (potwierdzenie wykonania prac i zapoznania się z zaleceniami):**")
+            st.markdown("**Podpis Klienta (potwierdzenie wykonania prac, pomiarów i zapoznania się z zaleceniami):**")
 
             canvas_result = st_canvas(
                 fill_color="rgba(255, 255, 255, 0)",
@@ -994,12 +1428,13 @@ if st.session_state["logged_role"] == "serwisant":
                 df.loc[t_idx, "Czas_Pracy_Min"] = float(work_minutes)
                 df.loc[t_idx, "Zalecenia_Klienta"] = str(client_recommendations)
                 df.loc[t_idx, "Notatka_Serwisanta"] = str(internal_note)
+                df.loc[t_idx, "Wyniki_Przegladu"] = str(inspection_full_text)
                 df.loc[t_idx, "Data_Zamkniecia"] = str(datetime.date.today())
                 df.loc[t_idx, "Podpis_Zlozony"] = "Tak" if (canvas_result.image_data is not None) else "Nie"
 
                 save_tickets(df)
                 st.session_state["active_ticket_id"] = None
-                st.success("Zlecenie zostało zamknięte! Wracasz do pozostałych klientów z dzisiejszej trasy.")
+                st.success("Zlecenie i protokół zostały zapisane! Wracasz do pozostałych klientów z dzisiejszej trasy.")
                 st.rerun()
 
 # ==========================================
@@ -1049,7 +1484,7 @@ elif st.session_state["logged_role"] == "koordynator":
                         f"📍 Punkty: **{prop['count']}/4** ({prop['miasta']}) | "
                         f"💰 Przewidywany przychód: **{prop['total_rev']:,.0f} zł** | 🔥 Krytyczne: **{prop['crit_count']}**"
                     )
-                    sub_df = df.loc[prop["indices"], ["ID_Zgloszenia", "Klient", "Kod_Pocztowy", "Miasto", "Adres", "Opis_Zgloszenia", "Priorytet_Krytyczny", "Kwota_Przewidywana"]]
+                    sub_df = df.loc[prop["indices"], ["ID_Zgloszenia", "Klient", "Kod_Pocztowy", "Miasto", "Adres", "Typ_Instalacji", "Wymagany_Przeglad", "Priorytet_Krytyczny", "Kwota_Przewidywana"]]
                     st.dataframe(sub_df, use_container_width=True, hide_index=True)
 
             if st.button("✅ ZATWIERDŹ I PRZYPISZ WSZYSTKIE POWYŻSZE TRASY DO SERWISANTÓW", type="primary"):
@@ -1152,17 +1587,29 @@ elif st.session_state["logged_role"] == "koordynator":
             with st.expander("Rozwiń formularz dodawania nowego zgłoszenia", expanded=False):
                 with st.form("new_ticket_form"):
                     n_klient = st.text_input("Imię i nazwisko / Firma klienta:")
-                    n_tel = st.text_input("Telefon:")
+                    n_tel = st.text_input("Telefon (jeśli dwa numery, wpisz po ukośniku np. 500111222 / 600333444):")
                     n_kod = st.text_input("Kod pocztowy (XX-XXX):", placeholder="np. 05-800")
                     n_miasto = st.text_input("Miejscowość:")
                     n_adres = st.text_input("Ulica i numer:")
-                    n_typ_inst = st.selectbox("Typ instalacji:", ["Pompa Ciepła", "Fotowoltaika (PV)", "Pompa Ciepła + PV", "Magazyn Energii", "Inne"])
-                    n_kryt = st.selectbox("Czy zgłoszenie krytyczne (np. awaria PC)?", ["Nie", "Tak"])
+                    n_typ_inst = st.selectbox(
+                        "Urządzenie / Typ instalacji:",
+                        [
+                            "Pompa Ciepła Argom",
+                            "Falownik Deye (PV / Hybryda)",
+                            "Falownik GoodWe (PV / Hybryda)",
+                            "Pompa Ciepła Argom + PV Deye",
+                            "Pompa Ciepła Argom + PV GoodWe",
+                            "Magazyn Energii",
+                            "Inne urządzenie OZE"
+                        ]
+                    )
+                    n_przeglad = st.selectbox("Czy konserwator ma wykonać PRZEGLĄD urządzenia (Protokół pomiarowy)?", ["Nie", "Tak"])
+                    n_kryt = st.selectbox("Czy zgłoszenie krytyczne (np. awaria PC zimą)?", ["Nie", "Tak"])
                     n_typ_serw = st.selectbox("Rodzaj serwisu:", ["Płatny", "Gwarancyjny"])
                     n_kwota = st.number_input("Przewidywany przychód (zł):", min_value=0.0, step=50.0, value=650.0)
                     n_tech = st.selectbox("Przypisz serwisanta (lub Auto-Planer):", ["Auto-Planer"] + list(profiles.keys()))
                     n_data_plan = st.date_input("Data planowana (jeśli przypisujesz ręcznie):", value=datetime.date.today())
-                    n_opis = st.text_area("Opis usterki / zakres prac:")
+                    n_opis = st.text_area("Opis usterki / kod błędu / zakres prac:")
 
                     if st.form_submit_button("➕ Zapisz nowe zgłoszenie", type="primary"):
                         new_id = f"ZGL-{len(df) + 1001}"
@@ -1175,6 +1622,7 @@ elif st.session_state["logged_role"] == "koordynator":
                             "Telefon": n_tel,
                             "Typ_Instalacji": n_typ_inst,
                             "Opis_Zgloszenia": n_opis,
+                            "Wymagany_Przeglad": n_przeglad,
                             "Priorytet_Krytyczny": n_kryt,
                             "Typ_Serwisu": n_typ_serw,
                             "Serwisant": "" if n_tech == "Auto-Planer" else n_tech,
@@ -1186,6 +1634,7 @@ elif st.session_state["logged_role"] == "koordynator":
                             "Czas_Pracy_Min": 0.0,
                             "Zalecenia_Klienta": "",
                             "Notatka_Serwisanta": "",
+                            "Wyniki_Przegladu": "",
                             "Data_Zamkniecia": "",
                             "Podpis_Zlozony": "Nie"
                         }
@@ -1206,10 +1655,11 @@ elif st.session_state["logged_role"] == "koordynator":
 
                     with st.form("quick_edit_ticket_form"):
                         e_klient = st.text_input("Klient:", value=str(e_row["Klient"]))
-                        e_tel = st.text_input("Telefon:", value=str(e_row["Telefon"]))
+                        e_tel = st.text_input("Telefon (można wpisać 2 po ukośniku):", value=str(e_row["Telefon"]))
                         e_kod = st.text_input("Kod pocztowy:", value=str(e_row["Kod_Pocztowy"]))
                         e_miasto = st.text_input("Miasto:", value=str(e_row["Miasto"]))
                         e_adres = st.text_input("Adres:", value=str(e_row["Adres"]))
+                        e_inst = st.text_input("Urządzenie / Typ instalacji:", value=str(e_row["Typ_Instalacji"]))
 
                         tech_choices = [""] + list(profiles.keys())
                         curr_tech = str(e_row["Serwisant"]) if str(e_row["Serwisant"]) in tech_choices else ""
@@ -1220,152 +1670,6 @@ elif st.session_state["logged_role"] == "koordynator":
                         e_status = st.selectbox("Status:", status_choices, index=status_choices.index(curr_stat))
 
                         e_data_plan = st.text_input("Data planowana (RRRR-MM-DD):", value=str(e_row["Data_Planowana"]))
+                        e_przeglad = st.selectbox("Wymagany przegląd (Protokół):", ["Nie", "Tak"], index=1 if str(e_row.get("Wymagany_Przeglad", "Nie")) == "Tak" else 0)
                         e_kryt = st.selectbox("Krytyczne:", ["Nie", "Tak"], index=1 if str(e_row["Priorytet_Krytyczny"]) == "Tak" else 0)
-                        e_kwota = st.number_input("Kwota przewidywana (zł):", min_value=0.0, step=50.0, value=float(e_row["Kwota_Przewidywana"]))
-                        e_opis = st.text_area("Opis zgłoszenia:", value=str(e_row["Opis_Zgloszenia"]))
-
-                        if st.form_submit_button("💾 Zapisz zmiany w zgłoszeniu", type="primary"):
-                            df.loc[e_idx, "Klient"] = e_klient
-                            df.loc[e_idx, "Telefon"] = e_tel
-                            df.loc[e_idx, "Kod_Pocztowy"] = e_kod
-                            df.loc[e_idx, "Miasto"] = e_miasto
-                            df.loc[e_idx, "Adres"] = e_adres
-                            df.loc[e_idx, "Serwisant"] = e_tech
-                            df.loc[e_idx, "Status"] = e_status
-                            df.loc[e_idx, "Data_Planowana"] = e_data_plan
-                            df.loc[e_idx, "Priorytet_Krytyczny"] = e_kryt
-                            df.loc[e_idx, "Kwota_Przewidywana"] = float(e_kwota)
-                            df.loc[e_idx, "Opis_Zgloszenia"] = e_opis
-                            save_tickets(df)
-                            st.success(f"Zaktualizowano zgłoszenie {sel_edit_id}!")
-                            st.rerun()
-
-        st.divider()
-        st.subheader("📋 Wykaz wszystkich zgłoszeń w bazie")
-        f_col1, f_col2 = st.columns(2)
-        with f_col1:
-            filter_status = st.multiselect("Filtruj po statusie:", ["Nowe", "Zaplanowane", "W trakcie", "Zakończone"], default=["Nowe", "Zaplanowane", "W trakcie", "Zakończone"])
-        with f_col2:
-            search_q = st.text_input("🔍 Szukaj (Klient / Miasto / Adres / ID):")
-
-        view_df = df.copy()
-        if filter_status:
-            view_df = view_df[view_df["Status"].isin(filter_status)]
-        if search_q:
-            mask = (
-                view_df["Klient"].astype(str).str.contains(search_q, case=False, na=False) |
-                view_df["Miasto"].astype(str).str.contains(search_q, case=False, na=False) |
-                view_df["Adres"].astype(str).str.contains(search_q, case=False, na=False) |
-                view_df["ID_Zgloszenia"].astype(str).str.contains(search_q, case=False, na=False)
-            )
-            view_df = view_df[mask]
-
-        st.dataframe(view_df, use_container_width=True, hide_index=True)
-
-    with tab_brand:
-        st.subheader("🎨 Branding Aplikacji – Wgraj Logo Firmy")
-        st.info("Rekomendowane wymiary logo: **400 × 120 px** (proporcje ok. 3:1), format **PNG (z przezroczystym tłem)** lub JPG. Logo wyświetla się na ekranie głównym oraz na protokołach podpisywanych przez klienta.")
-
-        uploaded_logo = st.file_uploader("Wybierz plik graficzny z logo (PNG / JPG):", type=["png", "jpg", "jpeg"])
-        if uploaded_logo is not None:
-            img = Image.open(uploaded_logo)
-            img.thumbnail((400, 120))
-            buf = BytesIO()
-            img.save(buf, format="PNG")
-            b64_str = base64.b64encode(buf.getvalue()).decode("utf-8")
-            st.session_state["logo_b64"] = b64_str
-            with open(LOGO_FILE, "wb") as f:
-                f.write(buf.getvalue())
-            save_config_and_profiles(profiles, b64_str)
-            st.success("Logo zostało zapisane w chmurze i zaktualizowane w całej aplikacji!")
-            st.rerun()
-
-        st.divider()
-        st.subheader("📥 Import / Podmiana bazy z pliku Excel (.xlsx)")
-        uploaded_excel = st.file_uploader("Wgraj plik Excel z bazą zgłoszeń:", type=["xlsx"])
-        if uploaded_excel is not None:
-            if st.button("⚠️ Wczytaj dane z tego pliku Excel i zapisz w Google Sheets"):
-                new_df = ensure_columns(pd.read_excel(uploaded_excel))
-                save_tickets(new_df)
-                st.success("Baza zgłoszeń została zaimportowana!")
-                st.rerun()
-
-# ==========================================
-# 11. PANEL ZARZĄDU
-# ==========================================
-elif st.session_state["logged_role"] == "zarzad":
-    df = st.session_state["df_tickets"]
-    profiles = st.session_state["profiles"]
-
-    st.subheader("📊 Panel Zarządu – Raporty Operacyjne i Finansowe")
-
-    rep_tab_day, rep_tab_month = st.tabs(["📅 Raport Dzienny z Pracy Serwisantów", "📈 Raport Miesięczny i Prowizje"])
-
-    with rep_tab_day:
-        sel_date = st.date_input("Wybierz dzień raportu:", value=datetime.date.today())
-        sel_date_str = str(sel_date)
-
-        day_df = df[(df["Data_Zamkniecia"] == sel_date_str) | (df["Data_Planowana"] == sel_date_str)].copy()
-        closed_day = day_df[day_df["Status"] == "Zakończone"]
-
-        dc1, dc2, dc3, dc4 = st.columns(4)
-        dc1.metric("Przychód w wybranym dniu", f"{closed_day['Kwota_Koncowa'].sum():,.2f} zł")
-        dc2.metric("Zlecenia zamknięte dzisiaj", f"{len(closed_day)} / {len(day_df)}")
-        ftfr_day = round((len(closed_day[closed_day["Naprawione_1_Wizyta"] == "Tak"]) / len(closed_day) * 100.0), 1) if len(closed_day) > 0 else 100.0
-        dc3.metric("Skuteczność 1. wizyty (Dzień)", f"{ftfr_day}%")
-        dc4.metric("Łączny czas pracy w terenie", f"{int(closed_day['Czas_Pracy_Min'].sum())} min")
-
-        st.markdown("#### Zestawienie dzienne według serwisantów")
-        day_rows = []
-        for t_name in profiles.keys():
-            t_day = closed_day[closed_day["Serwisant"] == t_name]
-            day_rows.append({
-                "Serwisant": t_name,
-                "Zamknięte zlecenia": len(t_day),
-                "Serwisy Płatne": len(t_day[t_day["Typ_Serwisu"] == "Płatny"]),
-                "Serwisy Gwarancyjne": len(t_day[t_day["Typ_Serwisu"] == "Gwarancyjny"]),
-                "Naprawione od ręki (1. wizyta)": len(t_day[t_day["Naprawione_1_Wizyta"] == "Tak"]),
-                "Czas pracy (min)": int(t_day["Czas_Pracy_Min"].sum()),
-                "Przychód (zł)": float(t_day["Kwota_Koncowa"].sum())
-            })
-        st.dataframe(pd.DataFrame(day_rows), use_container_width=True, hide_index=True)
-
-        st.markdown("#### Szczegółowy wykaz zleceń z wybranego dnia")
-        st.dataframe(day_df, use_container_width=True, hide_index=True)
-
-    with rep_tab_month:
-        months_avail = sorted(list(set(
-            [datetime.date.today().strftime("%Y-%m")] +
-            [str(x)[:7] for x in df["Data_Zamkniecia"].unique() if len(str(x)) >= 7]
-        )), reverse=True)
-        sel_month = st.selectbox("Wybierz miesiąc rozliczeniowy (RRRR-MM):", months_avail)
-
-        m_df = df[(df["Status"] == "Zakończone") & (df["Data_Zamkniecia"].astype(str).str.startswith(sel_month))].copy()
-
-        mc1, mc2, mc3, mc4 = st.columns(4)
-        mc1.metric("Przychód miesięczny ogółem", f"{m_df['Kwota_Koncowa'].sum():,.2f} zł")
-        mc2.metric("Obsłużone zgłoszenia", len(m_df))
-        mc3.metric("Płatne vs Gwarancyjne", f"{len(m_df[m_df['Typ_Serwisu']=='Płatny'])} / {len(m_df[m_df['Typ_Serwisu']=='Gwarancyjny'])}")
-        ftfr_m = round((len(m_df[m_df["Naprawione_1_Wizyta"] == "Tak"]) / len(m_df) * 100.0), 1) if len(m_df) > 0 else 100.0
-        mc4.metric("Skuteczność 1. wizyty (Miesiąc)", f"{ftfr_m}%")
-
-        st.markdown("#### Podsumowanie wyników, wynagrodzeń i prowizji serwisantów")
-        month_summary = []
-        for t_name, t_prof in profiles.items():
-            tm = calculate_tech_metrics(df, t_name)
-            base_sal = float(t_prof.get("wynagrodzenie_bazowe", 0.0))
-            month_summary.append({
-                "Serwisant": t_name,
-                "Umowa": t_prof.get("umowa", ""),
-                "Zlecenia ogółem": tm["total_closed"],
-                "Płatne": tm["paid_count"],
-                "Gwarancyjne": tm["warranty_count"],
-                "Skuteczność 1. wizyty (%)": f"{tm['ftfr_pct']}%",
-                "Obrót miesięczny (zł)": round(tm["monthly_revenue"], 2),
-                "Brakuje do 3% (15 tys.)": round(tm["missing_tier_1"], 2),
-                "Brakuje do 4% (30 tys.)": round(tm["missing_tier_2"], 2),
-                "Podstawa (zł)": base_sal,
-                "Należna prowizja (zł)": round(tm["commission_pln"], 2),
-                "Łącznie do wypłaty (zł)": round(base_sal + tm["commission_pln"], 2)
-            })
-        st.dataframe(pd.DataFrame(month_summary), use_container_width=True, hide_index=True)
+                        e_kwota = st.number_input("Kwota przewidywana (zł):", min_value=0.0
