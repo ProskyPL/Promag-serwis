@@ -172,7 +172,7 @@ DIAGNOSTYKA_BAZA = {
         "F18 - Tz_Ac_OverCurr_Fault (Zwarcie lub przetężenie po stronie AC / LOAD)": (
             "CO TO ZNACZY: Nagły skok prądu na wyjściu AC lub w obwodzie awaryjnym LOAD.\n"
             "PROCEDURA KROK PO KROKU:\n"
-            "1. Wyłącz bezpiecznik AC (Grid) oraz odepnij wyjście awaryjne LOAD (Backup).\n"
+            "1. Wyłącz bezpiecznik obwodu LOAD (wyjście awaryjne) oraz odepnij wyjście awaryjne LOAD (Backup).\n"
             "2. Uruchom falownik na samym DC i baterii (bez obciążenia domu na LOAD).\n"
             "3. Jeśli ruszy bez błędu F18: w instalacji domowej podpiętej pod LOAD jest zwarcie lub za duże urządzenie (np. pompa ciepła).\n"
             "4. Jeśli błąd F18 wyskakuje przy odpiętych wtyczkach AC i LOAD: uszkodzony mostek IGBT – zgłoś demontaż na gwarancję."
@@ -181,7 +181,7 @@ DIAGNOSTYKA_BAZA = {
             "CO TO ZNACZY: Prąd z paneli PV lub baterii przekroczył limit.\n"
             "PROCEDURA KROK PO KROKU:\n"
             "1. Wyłącz hebel DC, rozepnij wtyczki MC4 wchodzące do falownika.\n"
-            "2. Zmierz miernikiem napięcie każdego stringu (Uoc) oraz prąd zwarcia (Isc).\n"
+            "2. Zmierz miernikiem napięcie każdego stringu (Uoc) oraz prąd zwarciowy (Isc).\n"
             "3. Sprawdź czy pod jedno MPPT nie podpięto równolegle zbyt wielu stringów."
         ),
         "F22 - Tz_EmergStop_Fault (Aktywowany wyłącznik PPOŻ / Brak zwory RSD)": (
@@ -247,15 +247,16 @@ DIAGNOSTYKA_BAZA = {
         ),
         "BMS Loss / Battery Communication Failure (Seria hybrydowa GoodWe ET)": (
             "PROCEDURA KROK PO KROKU:\n"
-            "1. W aplikacji SolarGo sprawdź, czy wybrano właściwy model baterii.\n"
-            "2. Sprawdź czy w ostatnim module bateryjnym wpięta jest zworka terminująca CAN (120 Ohm)."
+            "1. W aplikacji SolarGo sprawdź, czy wybrano dokładny model podłączonego magazynu energii (np. Pylontech Force H2, BYD HVS, GoodWe Lynx Home F).\n"
+            "2. Sprawdź, czy na końcu magistrali CAN w ostatnim module bateryjnym jest wpięty **rezystor terminujący (zworka 120 $\Omega$)**.\n"
+            "3. Zrestartuj najpierw falownik, a następnie kolumnę bateryjną."
         )
     },
     "Pompa Ciepła ARGOM / Układ Hydrauliczny i Solarny": {
         "E03 / E08 / Flow Switch Error (Błąd przepływu wody / zładu)": (
             "CO TO ZNACZY: Zbyt wolny przepływ wody/glikolu przez wymiennik – ryzyko zamrożenia wymiennika.\n"
             "PROCEDURA KROK PO KROKU (OBOWIĄZKOWA CHECKLISTA):\n"
-            "1. MANOMETR: Sprawdź ciśnienie na zegarze. Jeśli < 1.0 bar -> dopuść wody/glikolu do 1.5 - 1.8 bar.\n"
+            "1. MANOMETR: Sprawdź ciśnienie na zegarze. Jeśli < 1.0 bar -> dopuść wody/glikolu do **1.5 - 1.8 bar**.\n"
             "2. FILTRY (90% PRZYCZYN!): Zakręć zawory przed i za filtrem siatkowym (skośnym) i separatorem magnetycznym. Odkręć korek (podstaw wiadro!), wyjmij sitko i trzpień magnetyczny. Wypłucz czarny szlam pod wodą, zamontuj i odpowietrz.\n"
             "3. PRZEPŁYW PRZEZ PĘTLE: Odkręć na stałe min. 2 pętle podłogówki / grzejniki (klient nie może zamknąć wszystkich obiegów siłownikami!).\n"
             "4. POMPA OBIEGOWA: Sprawdź czy pompa obiegowa świeci i pracuje oraz czy pod łopatkę czujnika przepływu (Flow Switch) nie podeszły pakuły/teflon."
@@ -264,28 +265,28 @@ DIAGNOSTYKA_BAZA = {
             "CO TO ZNACZY: Ciepło ze sprężarki nie jest odbierane przez wodę.\n"
             "PROCEDURA KROK PO KROKU:\n"
             "1. Jeśli wyskakuje przy grzaniu CWU (bojlera): obniż temperaturę zadaną CWU ze sprężarki na 48-50 st.C. Sprawdź siłownik zaworu 3-drogowego (czy trzpień nie zaciął się w połowie) oraz odpowietrz wężownicę bojlera.\n"
-            "2. Jeśli wyskakuje przy grzaniu CO: wyczyść filtr siatkowy/magnetyczny i zwiększ bieg pompy obiegowej."
+            "2. Jeśli wyskakuje przy grzaniu CO: wyczyść filtr siatkowy/magnetyczny i zwiększ bieg pompy obiegowej na wyższy."
         ),
         "E02 / P02 - Low Pressure Protection (Błąd niskiego ciśnienia LP / Oblodzenie)": (
-            "CO TO ZNACZY: Brak odbioru ciepła z powietrza lub wyciek czynnika chłodniczego (F-gaz).\n"
+            "CO TO ZNACZY: Za niskie ciśnienie ssania – brak odbioru ciepła z powietrza lub wyciek czynnika (F-gaz).\n"
             "PROCEDURA KROK PO KROKU:\n"
-            "1. Jeśli parownik (tył agregatu) to bryła lodu: polej go ciepłą wodą (NIE KŁUJ ŚRUBOKRĘTEM!), udrożnij odpływ tacy ociekowej, sprawdź grzałkę tacy i włącz ręczny Defrost.\n"
+            "1. Jeśli parownik to bryła lodu: polej go ciepłą wodą (NIE KŁUJ ŚRUBOKRĘTEM!), udrożnij odpływ tacy ociekowej, sprawdź grzałkę tacy i włącz ręczny Defrost.\n"
             "2. Jeśli parownik jest czysty i wentylator kręci: podepnij manometry chłodnicze i sprawdź szczelność połączeń kielichowych detektorem gazu."
         ),
         "E04 / P04 - High Discharge Temp (Przegrzanie tłoczenia sprężarki > 115 st.C)": (
             "PROCEDURA KROK PO KROKU:\n"
-            "1. Sprawdź wtyczkę cewki zaworu rozprężnego (EEV) na płycie głównej agregatu (czy po resecie zasilania słychać charakterystyczne tykanie zaworu EEV).\n"
-            "2. Jeśli zawór EEV działa: w układzie brakuje czynnika chłodniczego (wyciek). Zlokalizuj nieszczelność, zrób próbę azotową, próżnię i napełnij wagowo wg tabliczki."
+            "1. Sprawdź wtyczkę cewki zaworu rozprężnego (EEV) na płycie głównej agregatu (czy po resecie zasilania słychać tykanie EEV).\n"
+            "2. Jeśli zawór EEV działa: w układzie brakuje czynnika chłodniczego (nieszczelność). Zlokalizuj wyciek, zrób próbę azotową, próżnię i napełnij wagowo."
         ),
-        "E05..E15 / T1..T4 Error (Błąd czujnika temperatury NTC - np. -40 st.C lub 150 st.C)": (
+        "E05..E15 / T1..T4 Error (Błąd czujnika temperatury NTC)": (
             "PROCEDURA KROK PO KROKU:\n"
             "1. Wejdź w podgląd temperatur na sterowniku – znajdź czujnik pokazujący skrajną wartość (np. -39 st.C, 150 st.C lub kreski).\n"
-            "2. Wypnij wtyczkę tego czujnika z płyty i zmierz opór miernikiem (kOhm). Przy 20-25 st.C sprawny czujnik NTC 10k ma mieć ok. 10-12.5 kOhm (dla PT1000 w solarach: ok. 1080-1100 Ohm). Jeśli pokazuje przerwę (OL) lub 0.0 -> wymień czujnik."
+            "2. Wypnij wtyczkę tego czujnika z płyty i zmierz opór miernikiem (kOhm). Przy 20-25 st.C sprawny czujnik NTC 10k ma mieć ok. 10-12.5 kOhm. Jeśli pokazuje przerwę (OL) lub 0.0 -> wymień czujnik."
         ),
         "E09 / Comm Error (Brak komunikacji sterownika z jednostką zewnętrzną)": (
             "PROCEDURA KROK PO KROKU:\n"
             "1. Sprawdź przewód komunikacyjny RS485 (zaciski A i B). Upewnij się, że A idzie do A, a B do B.\n"
-            "2. Sprawdź, czy na listwę zasilającą agregatu zewnętrznego dociera napięcie 230V/400V."
+            "2. Sprawdź zasilanie 230V/400V na listwie agregatu zewnętrznego."
         )
     }
 }
@@ -323,7 +324,6 @@ POSTAL_PREFIX_COORDS = {
 # ==========================================
 def extract_phone_numbers(raw_phone_str, raw_client_str=""):
     combined = f"{raw_phone_str} {raw_client_str}"
-    cleaned = re.sub(r'[^\d+]', ' ', combined)
     candidates = re.findall(r'(?:\+48)?\s*\d{3}\s*\d{3}\s*\d{3}|\d{9,11}|\d{2}\s*\d{3}\s*\d{2}\s*\d{2}', combined)
     phones = []
     for c in candidates:
@@ -517,7 +517,6 @@ def ensure_columns(df):
         else:
             df[col] = df[col].fillna("").astype(str).replace(["None", "nan", "NaT", "<NA>"], "")
 
-    # Automatyczne wyciąganie kodu pocztowego i miasta z Adresu jeśli puste
     for idx, r in df.iterrows():
         adr = str(r["Adres"])
         if str(r["Kod_Pocztowy"]).strip() == "":
@@ -593,7 +592,7 @@ def save_tickets(df):
             st.warning(f"Zapisano lokalnie. Synchronizacja z Google Sheets napotkała problem: {e}")
 
 # ==========================================
-# 4. ALGORYTM PLANOWANIA TRAS (Z WYBOREM SERWISANTA)
+# 4. ALGORYTM PLANOWANIA TRAS (Z WYBOREM SERWISANTA I KODU)
 # ==========================================
 def extract_coords_from_row(row):
     raw_text = f"{row.get('Kod_Pocztowy', '')} {row.get('Adres', '')} {row.get('Miasto', '')}"
@@ -743,7 +742,7 @@ def calculate_tech_metrics(df, tech_name):
     }
 
 # ==========================================
-# 5. INICJALIZACJA SESJI I LOGOWANIE
+# 5. INICJALIZACJA SESJI I TRWAŁE LOGOWANIE
 # ==========================================
 if "profiles" not in st.session_state or "logo_b64" not in st.session_state:
     p_loaded, l_loaded = load_config_and_profiles()
@@ -765,6 +764,22 @@ if "active_ticket_id" not in st.session_state:
     st.session_state["active_ticket_id"] = None
 
 if st.session_state["logged_role"] is None:
+    qp_user = st.query_params.get("user", None)
+    qp_token = st.query_params.get("token", None)
+    
+    if qp_user == "Koordynator" and qp_token == PIN_KOORDYNATOR:
+        st.session_state["logged_role"] = "koordynator"
+        st.session_state["logged_user"] = "Koordynator"
+    elif qp_user == "Zarząd" and qp_token == PIN_ZARZAD:
+        st.session_state["logged_role"] = "zarzad"
+        st.session_state["logged_user"] = "Zarząd"
+    elif qp_user in st.session_state["profiles"]:
+        expected_pin = str(st.session_state["profiles"][qp_user].get("pin", ""))
+        if qp_token == expected_pin:
+            st.session_state["logged_role"] = "serwisant"
+            st.session_state["logged_user"] = qp_user
+
+if st.session_state["logged_role"] is None:
     render_brand_logo(max_width=280, centered=True)
     st.markdown("<p style='text-align:center; color:#64748b;'>Mobilny System Zarządzania Serwisem OZE (Telefon / Tablet)</p>", unsafe_allow_html=True)
     st.divider()
@@ -778,6 +793,7 @@ if st.session_state["logged_role"] is None:
             ["--- Wybierz z listy ---"] + tech_list + ["Koordynator Serwisu", "Zarząd (Raporty)"]
         )
         pin_input = st.text_input("Wpisz 4-cyfrowy kod PIN:", type="password", max_chars=8)
+        remember_me = st.checkbox("🔒 Zapamiętaj mnie na tym urządzeniu (nie wylogowuj po nocy)", value=True)
 
         if st.button("🚀 Zaloguj się", type="primary"):
             if user_choice == "--- Wybierz z listy ---":
@@ -786,6 +802,9 @@ if st.session_state["logged_role"] is None:
                 if pin_input == PIN_KOORDYNATOR:
                     st.session_state["logged_role"] = "koordynator"
                     st.session_state["logged_user"] = "Koordynator"
+                    if remember_me:
+                        st.query_params["user"] = "Koordynator"
+                        st.query_params["token"] = PIN_KOORDYNATOR
                     st.rerun()
                 else:
                     st.error("Nieprawidłowy kod PIN Koordynatora.")
@@ -793,6 +812,9 @@ if st.session_state["logged_role"] is None:
                 if pin_input == PIN_ZARZAD:
                     st.session_state["logged_role"] = "zarzad"
                     st.session_state["logged_user"] = "Zarząd"
+                    if remember_me:
+                        st.query_params["user"] = "Zarząd"
+                        st.query_params["token"] = PIN_ZARZAD
                     st.rerun()
                 else:
                     st.error("Nieprawidłowy kod PIN Zarządu.")
@@ -803,6 +825,9 @@ if st.session_state["logged_role"] is None:
                     st.session_state["logged_user"] = user_choice
                     st.session_state["active_day"] = None
                     st.session_state["active_ticket_id"] = None
+                    if remember_me:
+                        st.query_params["user"] = user_choice
+                        st.query_params["token"] = expected_pin
                     st.rerun()
                 else:
                     st.error("Nieprawidłowy kod PIN serwisanta.")
@@ -829,6 +854,7 @@ with top_c2:
     st.markdown(f"**Zalogowany jako:** `{st.session_state['logged_user']}`")
 with top_c3:
     if st.button("🚪 Wyloguj"):
+        st.query_params.clear()
         st.session_state["logged_role"] = None
         st.session_state["logged_user"] = None
         st.session_state["active_day"] = None
@@ -902,7 +928,6 @@ if st.session_state["logged_role"] == "serwisant":
         my_tickets["Data_Grupa"] = my_tickets["Data_Planowana"].astype(str).str.strip()
         my_tickets.loc[my_tickets["Data_Grupa"] == "", "Data_Grupa"] = today_str
 
-        # ETAP 1: WIDOK POGRUPOWANYCH DNI
         if st.session_state["active_day"] is None:
             st.subheader("📅 Twoje zaplanowane dni wyjazdowe (Trasy)")
             st.caption("Zlecenia są pogrupowane na pojedyncze dni. Kliknij **Rozpocznij dzień**, aby odblokować listę klientów z danego dnia.")
@@ -950,7 +975,6 @@ if st.session_state["logged_role"] == "serwisant":
                             st.session_state["active_ticket_id"] = None
                             st.rerun()
 
-        # ETAP 2: AKTYWNY DZIEŃ – WYBÓR KLIENTA Z DANEGO DNIA
         elif st.session_state["active_day"] is not None and st.session_state["active_ticket_id"] is None:
             act_day = st.session_state["active_day"]
             day_tickets = my_tickets[my_tickets["Data_Grupa"] == act_day].copy()
@@ -1012,7 +1036,6 @@ if st.session_state["logged_role"] == "serwisant":
                                 st.session_state["active_ticket_id"] = t_id
                                 st.rerun()
 
-        # ETAP 3: AKTYWNE ZLECENIE U WYBRANEGO KLIENTA
         elif st.session_state["active_ticket_id"] is not None:
             selected_id = st.session_state["active_ticket_id"]
             act_day = st.session_state["active_day"]
@@ -1054,8 +1077,7 @@ if st.session_state["logged_role"] == "serwisant":
 
             st.divider()
 
-            # --- 1. ŚCIEŻKA DIAGNOSTYCZNA DLA TEGO ZLECENIA ---
-            with st.expander("🩺 NIE WIESZ CO SIĘ DZIEJE Z URZĄDZENIEM? Kliknij, aby otworzyć Ścieżkę Diagnostyczną (Deye / GoodWe / Argom)", expanded=False):
+            with st.expander("🩺 NIE WIESZ CO SIĘ DZIEJE Z URZĄDZENIEM? Kliknij, aby otworzyć Ścieżkę Diagnostyczną", expanded=False):
                 inst_lower = str(t_row["Typ_Instalacji"]).lower()
                 default_cat_idx = 0
                 if "goodwe" in inst_lower:
@@ -1067,7 +1089,6 @@ if st.session_state["logged_role"] == "serwisant":
                 diag_err = st.selectbox("Wybierz kod błędu lub objaw usterki:", list(DIAGNOSTYKA_BAZA[diag_cat].keys()), key="diag_err_ticket")
                 st.warning(DIAGNOSTYKA_BAZA[diag_cat][diag_err])
 
-            # --- 2. PROTOKÓŁ PRZEGLĄDU TECHNICZNEGO + WALIDATOR PARAMETRÓW ---
             przeglad_summary_lines = []
             need_inspection = (
                 str(t_row.get("Wymagany_Przeglad", "Nie")) == "Tak"
@@ -1141,7 +1162,6 @@ if st.session_state["logged_role"] == "serwisant":
 
             st.divider()
 
-            # --- 3. OBOWIĄZKOWA DOKUMENTACJA ZDJĘCIOWA (TABLICZKA ZNAMIONOWA + INSTALACJA) ---
             st.subheader("📸 Obowiązkowa dokumentacja zdjęciowa z instalacji")
             st.info("Wgraj zdjęcia z telefonu/tabletu: **1) Tabliczka znamionowa urządzenia**, **2) Widok instalacji / usterki przed i po naprawie**.")
             uploaded_photos = st.file_uploader(
@@ -1160,7 +1180,6 @@ if st.session_state["logged_role"] == "serwisant":
 
             st.divider()
 
-            # --- 4. ROZLICZENIE FINANSOWE I PROTOKÓŁ DLA KLIENTA ---
             st.subheader("🧾 Rozliczenie wizyty i wykonanych prac")
             calc_c1, calc_c2 = st.columns(2)
             with calc_c1:
@@ -1250,44 +1269,92 @@ if st.session_state["logged_role"] == "serwisant":
                     st.rerun()
 
 # ==========================================
-# 7. PANEL KOORDYNATORA
+# 7. PANEL KOORDYNATORA (NOWY PLANER TRAS Z WYBOREM ZLECEŃ "Z PALCA")
 # ==========================================
 elif st.session_state["logged_role"] == "koordynator":
     df = st.session_state["df_tickets"]
     profiles = st.session_state["profiles"]
 
     tab_plan, tab_kadry, tab_zlecenia, tab_brand = st.tabs([
-        "🗺️ Harmonogram i Auto-Planer Tras",
+        "🗺️ Harmonogram i Planowanie Tras",
         "👷 Profilowanie Serwisantów (Kadry i Wyniki)",
         "📋 Baza Zgłoszeń i Edycja",
         "🎨 Branding (Logo) i Plik Excel"
     ])
 
     with tab_plan:
-        st.subheader("🗺️ Inteligentne Planowanie Wyjazdów (Dla wybranego serwisanta lub wszystkich)")
-        st.markdown("""
-        * Grupowanie do **maks. 4 punktów** oddalonych od siebie o **maks. 50 km**.
-        * Trasa jest zatwierdzana, jeśli jej przewidywany przychód wynosi **min. 1200 zł** LUB zawiera **min. 2 zgłoszenia krytyczne**.
-        """)
+        st.subheader("🗺️ Planowanie wyjazdów dla serwisanta (Algorytm + Wybór Ręczny)")
+        st.markdown("Wybierz serwisanta, podaj interesujący Cię kod pocztowy (lub pozostaw puste), a następnie zaznacz zlecenia z okolicy, które chcesz mu przypisać na dany dzień (w tym tematy krytyczne, które musisz wcisnąć poza algorytmem).")
 
         p_col1, p_col2, p_col3 = st.columns(3)
         with p_col1:
-            target_tech_plan = st.selectbox("Wybierz serwisanta, dla którego planujesz trasę:", ["Wszyscy"] + list(profiles.keys()))
+            sel_tech_plan = st.selectbox("Wybierz serwisanta:", list(profiles.keys()), key="plan_tech_sel")
         with p_col2:
-            plan_start_date = st.date_input("Planuj wyjazdy od dnia:", value=datetime.date.today() + datetime.timedelta(days=1))
+            target_postal = st.text_input("Wpisz kod pocztowy okolicy (np. 05-800 lub 05):", value="", placeholder="np. 05-800")
         with p_col3:
-            plan_days = st.slider("Liczba dni do przodu:", min_value=1, max_value=10, value=5)
+            plan_date = st.date_input("Data planowanej trasy:", value=datetime.date.today() + datetime.timedelta(days=1))
 
-        if st.button("🚀 Wygeneruj propozycje tras", type="primary"):
-            proposals, msg = generate_smart_routes(df, profiles, plan_start_date, plan_days, target_tech=target_tech_plan)
-            st.session_state["route_proposals"] = proposals
-            st.session_state["route_msg"] = msg
+        # Filtrowanie dostępnych nowych zgłoszeń
+        pending_df = df[df["Status"].isin(["Nowe", "Do zaplanowania", ""])].copy()
+        if target_postal.strip() != "":
+            mask_postal = pending_df["Kod_Pocztowy"].astype(str).str.contains(target_postal.strip(), case=False, na=False) | \
+                          pending_df["Adres"].astype(str).str.contains(target_postal.strip(), case=False, na=False) | \
+                          pending_df["Miasto"].astype(str).str.contains(target_postal.strip(), case=False, na=False)
+            filtered_pending = pending_df[mask_postal]
+            if filtered_pending.empty:
+                st.warning(f"Brak nowych zgłoszeń pasujących do zapytania '{target_postal}'. Poniżej wyświetlam wszystkie nierozliczone zgłoszenia z bazy:")
+                filtered_pending = pending_df
+        else:
+            filtered_pending = pending_df
 
-        if "route_msg" in st.session_state:
+        st.markdown(f"#### 📍 Dostępne zlecenia do zaplanowania ({len(filtered_pending)} poz.):")
+        st.caption("Zaznacz ptaszkiem w kolumnie **Wybierz** te zlecenia, które chcesz wysłać wybranemu serwisantowi na dany dzień.")
+
+        if not filtered_pending.empty:
+            # Tworzymy tabelę interaktywną z polem wyboru
+            display_plan_df = filtered_pending[["ID_Zgloszenia", "Klient", "Kod_Pocztowy", "Miasto", "Adres", "Typ_Instalacji", "Priorytet_Krytyczny", "Kwota_Przewidywana", "Opis_Zgloszenia"]].copy()
+            display_plan_df.insert(0, "Wybierz", False)
+            
+            edited_plan_df = st.data_editor(
+                display_plan_df,
+                use_container_width=True,
+                hide_index=True,
+                key="editor_manual_routes"
+            )
+
+            selected_ids = edited_plan_df[edited_plan_df["Wybierz"] == True]["ID_Zgloszenia"].tolist()
+
+            col_btn_auto, col_btn_man = st.columns(2)
+            with col_btn_auto:
+                if st.button("🚀 Uruchom Auto-Planer klastrów (50km / 1200zł)", type="secondary"):
+                    proposals, msg = generate_smart_routes(df, profiles, plan_date, days_ahead=3, target_tech=sel_tech_plan)
+                    st.session_state["route_proposals"] = proposals
+                    st.session_state["route_msg"] = msg
+                    st.rerun()
+
+            with col_btn_man:
+                if st.button(f"✅ PRZYPISZ ZAZNACZONE ZLECENIA ({len(selected_ids)}) DLA: {sel_tech_plan}", type="primary"):
+                    if not selected_ids:
+                        st.error("Nie zaznaczono żadnego zlecenia do przypisania!")
+                    else:
+                        for tid in selected_ids:
+                            idx_match = df[df["ID_Zgloszenia"] == tid].index[0]
+                            df.loc[idx_match, "Serwisant"] = sel_tech_plan
+                            df.loc[idx_match, "Data_Planowana"] = str(plan_date)
+                            df.loc[idx_match, "Status"] = "Zaplanowane"
+                        save_tickets(df)
+                        st.success(f"Pomyślnie przypisano {len(selected_ids)} zleceń do serwisanta {sel_tech_plan} na dzień {plan_date}!")
+                        st.rerun()
+        else:
+            st.info("Brak nowych zleceń w bazie oczekujących na zaplanowanie.")
+
+        # Obsługa propozycji z auto-planera
+        if "route_msg" in st.session_state and st.session_state["route_msg"]:
             st.info(st.session_state["route_msg"])
 
         proposals = st.session_state.get("route_proposals", [])
         if proposals:
+            st.markdown("### 🤖 Propozycje z inteligentnego Auto-Planera:")
             for i, prop in enumerate(proposals):
                 with st.container(border=True):
                     st.markdown(
@@ -1298,7 +1365,7 @@ elif st.session_state["logged_role"] == "koordynator":
                     sub_df = df.loc[prop["indices"], ["ID_Zgloszenia", "Klient", "Kod_Pocztowy", "Miasto", "Adres", "Typ_Instalacji", "Opis_Zgloszenia", "Kwota_Przewidywana"]]
                     st.dataframe(sub_df, use_container_width=True, hide_index=True)
 
-            if st.button("✅ ZATWIERDŹ I PRZYPISZ POWYŻSZE TRASY DO HARMONOGRAMU", type="primary"):
+            if st.button("✅ ZATWIERDŹ WSZYSTKIE PROPOZYCJE AUTO-PLANERA", type="primary"):
                 for prop in proposals:
                     for idx in prop["indices"]:
                         df.loc[idx, "Serwisant"] = prop["serwisant"]
@@ -1306,7 +1373,7 @@ elif st.session_state["logged_role"] == "koordynator":
                         df.loc[idx, "Status"] = "Zaplanowane"
                 save_tickets(df)
                 st.session_state["route_proposals"] = []
-                st.success("Trasy zostały przypisane do serwisantów!")
+                st.success("Wszystkie wygenerowane trasy zostały zatwierdzone!")
                 st.rerun()
 
     with tab_kadry:
