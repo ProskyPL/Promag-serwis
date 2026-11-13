@@ -320,7 +320,7 @@ POSTAL_PREFIX_COORDS = {
 }
 
 # ==========================================
-# 3. FUNKCJE POMOCNICZE (TELEFONY, GSHEETS, BAZA)
+# 3. FUNKCJE POMOCNICZE (TELEFONY, GPS, GSHEETS)
 # ==========================================
 def extract_phone_numbers(raw_phone_str, raw_client_str=""):
     combined = f"{raw_phone_str} {raw_client_str}"
@@ -338,6 +338,40 @@ def extract_phone_numbers(raw_phone_str, raw_client_str=""):
             if d not in phones:
                 phones.append(d)
     return phones
+
+def extract_coords_from_row(row):
+    raw_text = f"{row.get('Kod_Pocztowy', '')} {row.get('Adres', '')} {row.get('Miasto', '')}"
+    match = re.search(r'\b(\d{2})-\d{3}\b', str(raw_text))
+    if match:
+        prefix = match.group(1)
+        if prefix in POSTAL_PREFIX_COORDS:
+            full_zip = re.sub(r'\D', '', match.group(0))
+            offset = (int(full_zip[-2:]) - 50) * 0.003
+            base_lat, base_lon = POSTAL_PREFIX_COORDS[prefix]
+            return base_lat + offset, base_lon + offset
+    return 52.23, 21.01
+
+def get_coords_for_postal(postal_str):
+    match = re.search(r'\b(\d{2})\b', str(postal_str))
+    if match:
+        prefix = match.group(1)
+        if prefix in POSTAL_PREFIX_COORDS:
+            full_digits = re.sub(r'\D', '', postal_str)
+            if len(full_digits) >= 5:
+                offset = (int(full_digits[-2:]) - 50) * 0.003
+            else:
+                offset = 0.0
+            base_lat, base_lon = POSTAL_PREFIX_COORDS[prefix]
+            return base_lat + offset, base_lon + offset
+    return 52.23, 21.01
+
+def haversine_km(lat1, lon1, lat2, lon2):
+    R = 6371.0
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2.0)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2.0)**2
+    return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 def get_gsheet_client():
     scopes = [
@@ -590,39 +624,6 @@ def save_tickets(df):
             ws.update([df_str.columns.values.tolist()] + df_str.values.tolist())
         except Exception as e:
             st.warning(f"Zapisano lokalnie. Synchronizacja z Google Sheets napotkała problem: {e}")
-
-# ==========================================
-# 4. ALGORYTM PLANOWANIA TRAS (Z WYBOREM SERWISANTA I KODU)
-# ==========================================
-def extract_coords_from_row(row):
-    raw_text = f"{row.get('Kod_Pocztowy', '')} {row.get('Adres', '')} {row.get('Miasto', '')}"
-    match = re.search(r'\b(\d{2})-\d{3}\b', str(raw_text))
-    if match:
-        prefix = match.group(1)
-        if prefix in POSTAL_PREFIX_COORDS:
-            full_zip = re.sub(r'\D', '', match.group(0))
-            offset = (int(full_zip[-2:]) - 50) * 0.003
-            base_lat, base_lon = POSTAL_PREFIX_COORDS[prefix]
-            return base_lat + offset, base_lon + offset
-    return 52.23, 21.01
-
-def haversine_km(lat1, lon1, lat2, lon2):
-    R = 6371.0
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
-    a = math.sin(dphi / 2.0)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2.0)**2
-    return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-def is_tech_available(tech_name, target_date_str, profiles):
-    tech_data = profiles.get(tech_name, {})
-    absences = tech_data.get("urlopy_l4", [])
-    for ab in absences:
-        start_d = ab.get("od", "")
-        end_d = ab.get("do", "")
-        if start_d <= target_date_str <= end_d:
-            return False
-    return True
 
 def generate_smart_routes(df, profiles, start_date, days_ahead=5, target_tech="Wszyscy"):
     if target_tech != "Wszyscy":
@@ -1269,7 +1270,7 @@ if st.session_state["logged_role"] == "serwisant":
                     st.rerun()
 
 # ==========================================
-# 7. PANEL KOORDYNATORA (NOWY PLANER TRAS Z WYBOREM ZLECEŃ "Z PALCA")
+# 7. PANEL KOORDYNATORA (PLANER Z PROMIENIEM GPS I WYBOREM RĘCZNYM)
 # ==========================================
 elif st.session_state["logged_role"] == "koordynator":
     df = st.session_state["df_tickets"]
@@ -1283,78 +1284,83 @@ elif st.session_state["logged_role"] == "koordynator":
     ])
 
     with tab_plan:
-        st.subheader("🗺️ Planowanie wyjazdów dla serwisanta (Algorytm + Wybór Ręczny)")
-        st.markdown("Wybierz serwisanta, podaj interesujący Cię kod pocztowy (lub pozostaw puste), a następnie zaznacz zlecenia z okolicy, które chcesz mu przypisać na dany dzień (w tym tematy krytyczne, które musisz wcisnąć poza algorytmem).")
+        st.subheader("🗺️ Planowanie Tras (Wyszukiwanie w promieniu GPS + Wybór ręczny)")
+        st.markdown("Wpisz kod pocztowy bazy/serwisanta oraz ustaw promień (km). System wyliczy odległość geograficzną zgłoszeń. Możesz zaznaczyć dowolne zgłoszenie 'z palca' (np. pilną awarię spoza algorytmu) i przypisać je serwisantowi.")
 
-        p_col1, p_col2, p_col3 = st.columns(3)
+        p_col1, p_col2, p_col3, p_col4 = st.columns([1.2, 1, 1, 1])
         with p_col1:
             sel_tech_plan = st.selectbox("Wybierz serwisanta:", list(profiles.keys()), key="plan_tech_sel")
         with p_col2:
-            target_postal = st.text_input("Wpisz kod pocztowy okolicy (np. 05-800 lub 05):", value="", placeholder="np. 05-800")
+            base_postal = st.text_input("Kod bazowy (np. 05-800):", value="05-800")
         with p_col3:
-            plan_date = st.date_input("Data planowanej trasy:", value=datetime.date.today() + datetime.timedelta(days=1))
+            radius_km = st.slider("Maks. promień (km):", min_value=10, max_value=200, value=50, step=10)
+        with p_col4:
+            plan_date = st.date_input("Data planu:", value=datetime.date.today() + datetime.timedelta(days=1))
 
-        # Filtrowanie dostępnych nowych zgłoszeń
+        # Obliczanie odległości GPS od wpisanego kodu pocztowego
+        base_lat, base_lon = get_coords_for_postal(base_postal)
+        
         pending_df = df[df["Status"].isin(["Nowe", "Do zaplanowania", ""])].copy()
-        if target_postal.strip() != "":
-            mask_postal = pending_df["Kod_Pocztowy"].astype(str).str.contains(target_postal.strip(), case=False, na=False) | \
-                          pending_df["Adres"].astype(str).str.contains(target_postal.strip(), case=False, na=False) | \
-                          pending_df["Miasto"].astype(str).str.contains(target_postal.strip(), case=False, na=False)
-            filtered_pending = pending_df[mask_postal]
-            if filtered_pending.empty:
-                st.warning(f"Brak nowych zgłoszeń pasujących do zapytania '{target_postal}'. Poniżej wyświetlam wszystkie nierozliczone zgłoszenia z bazy:")
-                filtered_pending = pending_df
-        else:
-            filtered_pending = pending_df
+        
+        if not pending_df.empty:
+            distances = []
+            for _, r in pending_df.iterrows():
+                r_lat, r_lon = extract_coords_from_row(r)
+                dist = haversine_km(base_lat, base_lon, r_lat, r_lon)
+                distances.append(round(dist, 1))
+            pending_df["Odleglosc_km"] = distances
 
-        st.markdown(f"#### 📍 Dostępne zlecenia do zaplanowania ({len(filtered_pending)} poz.):")
-        st.caption("Zaznacz ptaszkiem w kolumnie **Wybierz** te zlecenia, które chcesz wysłać wybranemu serwisantowi na dany dzień.")
-
-        if not filtered_pending.empty:
-            # Tworzymy tabelę interaktywną z polem wyboru
-            display_plan_df = filtered_pending[["ID_Zgloszenia", "Klient", "Kod_Pocztowy", "Miasto", "Adres", "Typ_Instalacji", "Priorytet_Krytyczny", "Kwota_Przewidywana", "Opis_Zgloszenia"]].copy()
-            display_plan_df.insert(0, "Wybierz", False)
+            # Filtrowanie po promieniu
+            radius_df = pending_df[pending_df["Odleglosc_km"] <= radius_km].sort_values(by="Odleglosc_km").copy()
             
-            edited_plan_df = st.data_editor(
-                display_plan_df,
-                use_container_width=True,
-                hide_index=True,
-                key="editor_manual_routes"
-            )
+            st.markdown(f"#### 📍 Zgłoszenia w promieniu do **{radius_km} km** od kodu `{base_postal}` ({len(radius_df)} poz.):")
+            st.caption("Zaznacz zlecenia, które chcesz przypisać. Widzisz tu całą okolicę, więc możesz dołożyć dowolny krytyczny temat pomimo odległości.")
 
-            selected_ids = edited_plan_df[edited_plan_df["Wybierz"] == True]["ID_Zgloszenia"].tolist()
+            if not radius_df.empty:
+                display_plan_df = radius_df[["ID_Zgloszenia", "Odleglosc_km", "Klient", "Kod_Pocztowy", "Miasto", "Adres", "Typ_Instalacji", "Priorytet_Krytyczny", "Kwota_Przewidywana", "Opis_Zgloszenia"]].copy()
+                display_plan_df.insert(0, "Wybierz", False)
+                
+                edited_plan_df = st.data_editor(
+                    display_plan_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    key="editor_gps_routes"
+                )
 
-            col_btn_auto, col_btn_man = st.columns(2)
-            with col_btn_auto:
-                if st.button("🚀 Uruchom Auto-Planer klastrów (50km / 1200zł)", type="secondary"):
-                    proposals, msg = generate_smart_routes(df, profiles, plan_date, days_ahead=3, target_tech=sel_tech_plan)
-                    st.session_state["route_proposals"] = proposals
-                    st.session_state["route_msg"] = msg
-                    st.rerun()
+                selected_ids = edited_plan_df[edited_plan_df["Wybierz"] == True]["ID_Zgloszenia"].tolist()
 
-            with col_btn_man:
-                if st.button(f"✅ PRZYPISZ ZAZNACZONE ZLECENIA ({len(selected_ids)}) DLA: {sel_tech_plan}", type="primary"):
-                    if not selected_ids:
-                        st.error("Nie zaznaczono żadnego zlecenia do przypisania!")
-                    else:
-                        for tid in selected_ids:
-                            idx_match = df[df["ID_Zgloszenia"] == tid].index[0]
-                            df.loc[idx_match, "Serwisant"] = sel_tech_plan
-                            df.loc[idx_match, "Data_Planowana"] = str(plan_date)
-                            df.loc[idx_match, "Status"] = "Zaplanowane"
-                        save_tickets(df)
-                        st.success(f"Pomyślnie przypisano {len(selected_ids)} zleceń do serwisanta {sel_tech_plan} na dzień {plan_date}!")
+                col_btn_auto, col_btn_man = st.columns(2)
+                with col_btn_auto:
+                    if st.button("🤖 Uruchom Auto-Planer klastrów", type="secondary"):
+                        proposals, msg = generate_smart_routes(df, profiles, plan_date, days_ahead=3, target_tech=sel_tech_plan)
+                        st.session_state["route_proposals"] = proposals
+                        st.session_state["route_msg"] = msg
                         st.rerun()
-        else:
-            st.info("Brak nowych zleceń w bazie oczekujących na zaplanowanie.")
 
-        # Obsługa propozycji z auto-planera
+                with col_btn_man:
+                    if st.button(f"✅ PRZYPISZ ZAZNACZONE ({len(selected_ids)}) DLA: {sel_tech_plan}", type="primary"):
+                        if not selected_ids:
+                            st.error("Nie zaznaczono żadnego zlecenia!")
+                        else:
+                            for tid in selected_ids:
+                                idx_match = df[df["ID_Zgloszenia"] == tid].index[0]
+                                df.loc[idx_match, "Serwisant"] = sel_tech_plan
+                                df.loc[idx_match, "Data_Planowana"] = str(plan_date)
+                                df.loc[idx_match, "Status"] = "Zaplanowane"
+                            save_tickets(df)
+                            st.success(f"Przypisano {len(selected_ids)} zleceń do serwisanta {sel_tech_plan} na dzień {plan_date}!")
+                            st.rerun()
+            else:
+                st.warning(f"Brak nowych zgłoszeń w promieniu {radius_km} km od kodu {base_postal}. Zwiększ promień w suwaku powyżej.")
+        else:
+            st.info("Brak nowych zgłoszeń oczekujących na zaplanowanie w całej bazie.")
+
         if "route_msg" in st.session_state and st.session_state["route_msg"]:
             st.info(st.session_state["route_msg"])
 
         proposals = st.session_state.get("route_proposals", [])
         if proposals:
-            st.markdown("### 🤖 Propozycje z inteligentnego Auto-Planera:")
+            st.markdown("### 🤖 Propozycje z Auto-Planera:")
             for i, prop in enumerate(proposals):
                 with st.container(border=True):
                     st.markdown(
@@ -1373,7 +1379,7 @@ elif st.session_state["logged_role"] == "koordynator":
                         df.loc[idx, "Status"] = "Zaplanowane"
                 save_tickets(df)
                 st.session_state["route_proposals"] = []
-                st.success("Wszystkie wygenerowane trasy zostały zatwierdzone!")
+                st.success("Zatwierdzono trasy wygenerowane automatycznie!")
                 st.rerun()
 
     with tab_kadry:
