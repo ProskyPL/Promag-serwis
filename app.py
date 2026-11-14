@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -7,11 +8,31 @@ import json
 import base64
 import math
 import re
+import smtplib
+from email.message import EmailMessage
 from io import BytesIO
 from PIL import Image
 from streamlit_drawable_canvas import st_canvas
 import gspread
 from google.oauth2.service_account import Credentials
+
+# Import zewnętrznej Bazy Wiedzy (z fallbackiem, gdyby plik jeszcze nie był wgrany)
+try:
+    from baza_wiedzy import (
+        CENNIK_BAZOWY,
+        DOMYSLNE_NARZEDZIA,
+        DOMYSLNE_MATERIALY,
+        DIAGNOSTYKA_BAZA,
+        INSTRUKCJE_KONFIGURACJI_TEXT,
+        POSTAL_PREFIX_COORDS
+    )
+except ImportError:
+    CENNIK_BAZOWY = {"Przegląd/Konserwacja PC": 650.0, "Wymiana glikolu + odpowietrzenie": 1120.0}
+    DOMYSLNE_NARZEDZIA = [{"nazwa": "Refraktometr", "ilosc": 1}]
+    DOMYSLNE_MATERIALY = [{"nazwa": "Glikol 20L", "ilosc": 2, "koszt_zakupu": 180.0, "cena_klienta": 320.0, "slowo_klucz": "glikol"}]
+    DIAGNOSTYKA_BAZA = {"Brak pliku baza_wiedzy.py": {"Wgraj plik baza_wiedzy.py na GitHub": "Wgraj plik baza_wiedzy.py do tego samego katalogu co app.py."}}
+    INSTRUKCJE_KONFIGURACJI_TEXT = "Wgraj plik baza_wiedzy.py."
+    POSTAL_PREFIX_COORDS = {"05": (52.08, 20.85)}
 
 # ==========================================
 # 1. KONFIGURACJA STRONY I RESPONSYWNY CSS
@@ -27,7 +48,7 @@ st.markdown("""
 <style>
     .stButton > button {
         width: 100%;
-        min-height: 50px;
+        min-height: 48px;
         font-size: 15px !important;
         font-weight: 600 !important;
         border-radius: 10px !important;
@@ -42,8 +63,16 @@ st.markdown("""
         margin-bottom: 10px;
     }
     .kpi-card-warn { border-left: 6px solid #f59e0b; }
+    .kpi-card-danger {
+        background: linear-gradient(135deg, #7f1d1d 0%, #450a0a 100%);
+        color: #ffffff;
+        padding: 15px;
+        border-radius: 12px;
+        border-left: 6px solid #ef4444;
+        margin-bottom: 12px;
+    }
     .kpi-title { font-size: 12px; text-transform: uppercase; color: #94a3b8; }
-    .kpi-value { font-size: 22px; font-weight: 800; color: #f8fafc; }
+    .kpi-value { font-size: 21px; font-weight: 800; color: #f8fafc; }
     .kpi-sub { font-size: 13px; color: #38bdf8; margin-top: 4px; }
     .day-card {
         background-color: #1e293b;
@@ -70,7 +99,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. STAŁE, CENNIK I BAZA WIEDZY (DEYE, GOODWE, ARGOM)
+# 2. STAŁE OPERACYJNE I KOSZTOWE
 # ==========================================
 GOOGLE_SHEET_NAME = "Serwisowa posortowana"
 LOCAL_EXCEL_FILE = "Serwisowa posortowana.xlsx"
@@ -80,247 +109,64 @@ LOGO_FILE = "logo.png"
 PIN_KOORDYNATOR = "1234"
 PIN_ZARZAD = "9999"
 
-DEFAULT_TECHS = {
-    "Leszek": {
-        "pin": "4829",
-        "pelne_dane": "Leszek - Serwisant OZE",
-        "telefon": "",
-        "umowa": "Umowa o pracę",
-        "wynagrodzenie_bazowe": 6500.0,
-        "bhp_data": "2026-01-15",
-        "bhp_protokol": "BHP/01/2026 - Ważne",
-        "medycyna_data": "2026-01-10",
-        "medycyna_zakres": "Praca pow. 3m, SEP E+D, prawo jazdy kat. B",
-        "urlopy_l4": [],
-        "notatki_poufne": "Doświadczony w pompach ciepła i falownikach hybrydowych."
-    },
-    "Mikołaj": {
-        "pin": "7315",
-        "pelne_dane": "Mikołaj - Serwisant OZE",
-        "telefon": "",
-        "umowa": "B2B",
-        "wynagrodzenie_bazowe": 7000.0,
-        "bhp_data": "2026-02-01",
-        "bhp_protokol": "BHP/02/2026 - Ważne",
-        "medycyna_data": "2026-01-25",
-        "medycyna_zakres": "Praca pow. 3m, SEP E+D, F-gazy",
-        "urlopy_l4": [],
-        "notatki_poufne": ""
-    },
-    "Wojtek": {
-        "pin": "5942",
-        "pelne_dane": "Wojtek - Serwisant OZE",
-        "telefon": "",
-        "umowa": "Umowa o pracę",
-        "wynagrodzenie_bazowe": 6000.0,
-        "bhp_data": "2026-03-01",
-        "bhp_protokol": "BHP/03/2026 - Ważne",
-        "medycyna_data": "2026-02-20",
-        "medycyna_zakres": "Praca na wysokości, SEP E, kat. B",
-        "urlopy_l4": [],
-        "notatki_poufne": ""
-    },
-    "Serwisant 4": {
-        "pin": "8164",
-        "pelne_dane": "Wakat (Serwisant 4) - zmień w panelu Kadry",
-        "telefon": "",
-        "umowa": "Umowa zlecenie",
-        "wynagrodzenie_bazowe": 6000.0,
-        "bhp_data": "2026-01-01",
-        "bhp_protokol": "Brak",
-        "medycyna_data": "2026-01-01",
-        "medycyna_zakres": "Do uzupełnienia",
-        "urlopy_l4": [],
-        "notatki_poufne": ""
-    }
-}
+DEFAULT_HOURLY_RATE = 70.0   # 70 zł / godzina pracy serwisanta
+DEFAULT_FUEL_PRICE = 8.0     # 8 zł / litr paliwa
+DEFAULT_ONSITE_HOURS = 1.5   # 1.5 godziny średnio u klienta
+DEFAULT_BURN_L_100KM = 9.0   # domyślne spalanie busa 9 l / 100 km
+DEFAULT_SPEED_KMH = 60.0     # średnia prędkość przelotowa 60 km/h
+ROAD_TORTUOSITY = 1.3        # współczynnik krętości dróg względem linii prostej GPS
+TARGET_NET_PROFIT = 1200.0   # docelowy czysty zysk z trasy
 
 COMMISSION_TIER_1 = 15000.0
 COMMISSION_RATE_1 = 0.03
 COMMISSION_TIER_2 = 30000.0
 COMMISSION_RATE_2 = 0.04
 
-CENNIK_BAZOWY = {
-    "Przegląd/Konserwacja PC (Powietrze)": 650.0,
-    "Przegląd/Konserwacja PC (Grunt)": 850.0,
-    "Przegląd instalacji PV (<10 kWp)": 550.0,
-    "Przegląd instalacji PV (>10 kWp)": 800.0,
-    "Diagnostyka / Awaria Pompy Ciepła": 750.0,
-    "Diagnostyka / Awaria Falownika PV": 600.0,
-    "Wymiana glikolu + odpowietrzenie układu": 1120.0,
-    "Odpowietrzenie układu solarnego / CO": 840.0,
-    "Czyszczenie filtrów i separatora magnetycznego": 400.0,
-    "Pomiary elektryczne + Protokół": 650.0,
-    "Serwis Gwarancyjny (Rozliczenie wewnętrzne)": 0.0
-}
-
-DIAGNOSTYKA_BAZA = {
-    "Falownik Deye (Hybrydowy / Stringowy)": {
-        "F08 - GFDI_Relay_Failure (Błąd przekaźnika uziemienia / N-PE)": (
-            "CO TO ZNACZY: Falownik wykrył problem z uziemieniem obudowy lub przebicie między N a PE.\n"
-            "PROCEDURA KROK PO KROKU:\n"
-            "1. Wyłącz falownik (AC i DC). Weź miernik uniwersalny (V AC) i zmierz napięcie między szyną N a PE w rozdzielnicy.\n"
-            "2. Jeśli napięcie N-PE > 5V-10V: słabe uziemienie budynku lub brak podziału PEN. Sprawdź przewód PE od falownika do bednarki.\n"
-            "3. W menu Deye (Advanced Function -> kod 7777) sprawdź opcję 'Signal ISLAND MODE' (gdy podpięty jest obwód Backup/Load)."
-        ),
-        "F13 - Working_Mode_Change (Reset trybu pracy)": (
-            "CO TO ZNACZY: Zmiana parametrów sieci lub trybu pracy.\n"
-            "PROCEDURA KROK PO KROKU:\n"
-            "1. Odczekaj 3 minuty – falownik zazwyczaj sam odliczy czas i wystartuje.\n"
-            "2. Jeśli wisi na stałe: wyłącz AC, przełącz hebel DC na OFF, wyłącz baterię. Odczekaj 2 minuty aż zgaśnie ekran. Włącz w kolejności: Bateria -> DC -> AC."
-        ),
-        "F18 - Tz_Ac_OverCurr_Fault (Zwarcie lub przetężenie po stronie AC / LOAD)": (
-            "CO TO ZNACZY: Nagły skok prądu na wyjściu AC lub w obwodzie awaryjnym LOAD.\n"
-            "PROCEDURA KROK PO KROKU:\n"
-            "1. Wyłącz bezpiecznik obwodu LOAD (wyjście awaryjne) oraz odepnij wyjście awaryjne LOAD (Backup).\n"
-            "2. Uruchom falownik na samym DC i baterii (bez obciążenia domu na LOAD).\n"
-            "3. Jeśli ruszy bez błędu F18: w instalacji domowej podpiętej pod LOAD jest zwarcie lub za duże urządzenie (np. pompa ciepła).\n"
-            "4. Jeśli błąd F18 wyskakuje przy odpiętych wtyczkach AC i LOAD: uszkodzony mostek IGBT – zgłoś demontaż na gwarancję."
-        ),
-        "F20 - Tz_Dc_OverCurr_Fault (Przetężenie po stronie DC)": (
-            "CO TO ZNACZY: Prąd z paneli PV lub baterii przekroczył limit.\n"
-            "PROCEDURA KROK PO KROKU:\n"
-            "1. Wyłącz hebel DC, rozepnij wtyczki MC4 wchodzące do falownika.\n"
-            "2. Zmierz miernikiem napięcie każdego stringu (Uoc) oraz prąd zwarciowy (Isc).\n"
-            "3. Sprawdź czy pod jedno MPPT nie podpięto równolegle zbyt wielu stringów."
-        ),
-        "F22 - Tz_EmergStop_Fault (Aktywowany wyłącznik PPOŻ / Brak zwory RSD)": (
-            "CO TO ZNACZY: Otwarty obwód wyłącznika awaryjnego na płycie sterującej.\n"
-            "PROCEDURA KROK PO KROKU:\n"
-            "1. Odkręć dolną pokrywę komunikacyjną falownika Deye.\n"
-            "2. Znajdź kostkę RSD / Emergency Stop / Dry Contact.\n"
-            "3. Jeśli klient nie ma przycisku PPOŻ: wypadła lub poluzowała się fabryczna zworka z drutu łącząca dwa piny RSD. Dokręć ją płaskim śrubokrętem.\n"
-            "4. Jeśli jest przycisk PPOŻ: sprawdź miernikiem na ciągłość obwodu (piszczyk), czy przycisk nie jest wciśnięty."
-        ),
-        "F23 / F24 - Tz_GFCI_OC / DC_Insulation_Fault (Prąd upływu / Błąd izolacji DC)": (
-            "CO TO ZNACZY: Przebicie prądu z paneli PV lub kabli solarnych przez wilgoć do uziemienia (konstrukcji dachu).\n"
-            "PROCEDURA KROK PO KROKU:\n"
-            "1. Wyłącz AC i DC. Wypnij wszystkie stringi z falownika.\n"
-            "2. Zmierz miernikiem napięcie DC między Plusem stringu a uziemieniem (PE) oraz Minusem a PE.\n"
-            "3. Jeśli napięcie do ziemi jest stałe i wysokie (np. 200V-400V) i nie spada: masz zwarcie kabla lub złącza MC4 do dachu!\n"
-            "4. Wypnij wkładki ochronnika przepięć (SPD) DC w skrzynce – jeśli błąd zniknie, wymień zawilgoconą wkładkę SPD. Jeśli nie – szukaj na dachu złącza MC4 leżącego w wodzie."
-        ),
-        "F29 - Parallel_Comm_Fault (Błąd komunikacji równoległej Master/Slave)": (
-            "CO TO ZNACZY: W menu włączono pracę kaskadową wielu falowników, a wisi tylko jeden.\n"
-            "PROCEDURA KROK PO KROKU:\n"
-            "1. Wejdź w: Advanced Function (Ustawienia zaawansowane) -> kod 7777.\n"
-            "2. Odznacz ptaszek przy 'Parallel', 'Master' oraz 'Slave'. Zatwierdź OK."
-        ),
-        "F35 - AC_NoUtility_Fault (Brak sieci energetycznej na zaciskach GRID)": (
-            "CO TO ZNACZY: Do kostki GRID w falowniku nie dociera napięcie 3-fazowe.\n"
-            "PROCEDURA KROK PO KROKU:\n"
-            "1. Zmierz miernikiem napięcia na śrubach kostki GRID: L1-N, L2-N, L3-N (ma być 210-250V) oraz międzyfazowo (400V).\n"
-            "2. Jeśli brakuje fazy: sprawdź bezpiecznik przedlicznikowy i nadprądowy w rozdzielnicy.\n"
-            "3. Jeśli napięcia są obecne, a nadal jest F35: zamień miejscami przewody L1 i L2 (błąd kolejności wirowania faz)."
-        ),
-        "F56 / F58 - DC_VoltLow / BMS_Comm_Fault (Rozładowana bateria / Brak komunikacji BMS)": (
-            "CO TO ZNACZY: BMS odciął baterię lub brak komunikacji po kablu CAN/RS485.\n"
-            "PROCEDURA KROK PO KROKU:\n"
-            "1. Zmierz napięcie V DC na śrubach BAT+ i BAT-. Jeśli 0V: włącz hebel na baterii i przytrzymaj przycisk RST/SW przez 5 sekund (wybudzenie Black Start).\n"
-            "2. Sprawdź kabel RJ45: musi być wpięty w port BMS w falowniku i port CAN w baterii.\n"
-            "3. W menu Battery Setting sprawdź 'Lithium Mode' (zazwyczaj 00 dla CAN). Jeśli brak kabla, przełącz tymczasowo na 'Use Batt V', aby podładować baterię."
-        )
-    },
-    "Falownik GoodWe (SDT G2 / MS / DNS / ET Plus Hybryda)": {
-        "Isolation Failure (Kod 16 - Błąd rezystancji izolacji DC < 1 MOhm)": (
-            "CO TO ZNACZY: Zawilgocone złącze MC4, przetarty kabel na dachu lub uszkodzony ochronnik SPD DC.\n"
-            "PROCEDURA KROK PO KROKU:\n"
-            "1. Wyłącz AC i DC, wypnij wszystkie stringi. Podpinaj po jednym stringu i sprawdź, który wywołuje błąd.\n"
-            "2. Zmierz rezystancję izolacji Riso miernikiem na 1000V DC (norma >= 1.0 MOhm). Sprawdź wkładki SPD DC w rozdzielnicy."
-        ),
-        "Vac Failure / Grid Overvoltage (Napięcie sieci AC > 253V)": (
-            "CO TO ZNACZY: Zbyt wysokie napięcie w sieci energetycznej wyłącza falownik.\n"
-            "PROCEDURA KROK PO KROKU:\n"
-            "1. Zmierz napięcie L1-N, L2-N, L3-N. Dokręć wszystkie śruby w rozdzielnicy PV i głównej (luźny przewód N podbija napięcie!).\n"
-            "2. Połącz się z falownikiem przez aplikację SolarGo (hasło instalatora: goodwe2010).\n"
-            "3. Sprawdź kod kraju (Poland EN50549) i włącz funkcję mocy biernej Q(U) w zakładce Advanced Settings -> Reactive Power."
-        ),
-        "Utility Loss (Brak sieci AC na wtyczce falownika)": (
-            "PROCEDURA KROK PO KROKU:\n"
-            "1. Wyłącz bezpiecznik AC, wyjmij wtyczkę AC z dołu falownika GoodWe.\n"
-            "2. Rozkręć wtyczkę i sprawdź, czy któryś przewód fazowy lub N nie wysunął się z tulejki zaciskowej."
-        ),
-        "Relay Check Failure (Błąd testu przekaźników AC)": (
-            "PROCEDURA KROK PO KROKU:\n"
-            "1. Zmierz napięcie między N a PE (powinno być bliskie 0V).\n"
-            "2. Zrób pełny restart falownika (AC i DC wyłączone na 5 minut). Jeśli nadal klika i wyrzuca Relay Failure – uszkodzony przekaźnik na płycie (wymiana gwarancyjna)."
-        ),
-        "BMS Loss / Battery Communication Failure (Seria hybrydowa GoodWe ET)": (
-            "PROCEDURA KROK PO KROKU:\n"
-            "1. W aplikacji SolarGo sprawdź, czy wybrano dokładny model podłączonego magazynu energii (np. Pylontech Force H2, BYD HVS, GoodWe Lynx Home F).\n"
-            "2. Sprawdź, czy na końcu magistrali CAN w ostatnim module bateryjnym jest wpięty **rezystor terminujący (zworka 120 $\Omega$)**.\n"
-            "3. Zrestartuj najpierw falownik, a następnie kolumnę bateryjną."
-        )
-    },
-    "Pompa Ciepła ARGOM / Układ Hydrauliczny i Solarny": {
-        "E03 / E08 / Flow Switch Error (Błąd przepływu wody / zładu)": (
-            "CO TO ZNACZY: Zbyt wolny przepływ wody/glikolu przez wymiennik – ryzyko zamrożenia wymiennika.\n"
-            "PROCEDURA KROK PO KROKU (OBOWIĄZKOWA CHECKLISTA):\n"
-            "1. MANOMETR: Sprawdź ciśnienie na zegarze. Jeśli < 1.0 bar -> dopuść wody/glikolu do **1.5 - 1.8 bar**.\n"
-            "2. FILTRY (90% PRZYCZYN!): Zakręć zawory przed i za filtrem siatkowym (skośnym) i separatorem magnetycznym. Odkręć korek (podstaw wiadro!), wyjmij sitko i trzpień magnetyczny. Wypłucz czarny szlam pod wodą, zamontuj i odpowietrz.\n"
-            "3. PRZEPŁYW PRZEZ PĘTLE: Odkręć na stałe min. 2 pętle podłogówki / grzejniki (klient nie może zamknąć wszystkich obiegów siłownikami!).\n"
-            "4. POMPA OBIEGOWA: Sprawdź czy pompa obiegowa świeci i pracuje oraz czy pod łopatkę czujnika przepływu (Flow Switch) nie podeszły pakuły/teflon."
-        ),
-        "E01 / P01 - High Pressure Protection (Błąd wysokiego ciśnienia freonu HP)": (
-            "CO TO ZNACZY: Ciepło ze sprężarki nie jest odbierane przez wodę.\n"
-            "PROCEDURA KROK PO KROKU:\n"
-            "1. Jeśli wyskakuje przy grzaniu CWU (bojlera): obniż temperaturę zadaną CWU ze sprężarki na 48-50 st.C. Sprawdź siłownik zaworu 3-drogowego (czy trzpień nie zaciął się w połowie) oraz odpowietrz wężownicę bojlera.\n"
-            "2. Jeśli wyskakuje przy grzaniu CO: wyczyść filtr siatkowy/magnetyczny i zwiększ bieg pompy obiegowej na wyższy."
-        ),
-        "E02 / P02 - Low Pressure Protection (Błąd niskiego ciśnienia LP / Oblodzenie)": (
-            "CO TO ZNACZY: Za niskie ciśnienie ssania – brak odbioru ciepła z powietrza lub wyciek czynnika (F-gaz).\n"
-            "PROCEDURA KROK PO KROKU:\n"
-            "1. Jeśli parownik to bryła lodu: polej go ciepłą wodą (NIE KŁUJ ŚRUBOKRĘTEM!), udrożnij odpływ tacy ociekowej, sprawdź grzałkę tacy i włącz ręczny Defrost.\n"
-            "2. Jeśli parownik jest czysty i wentylator kręci: podepnij manometry chłodnicze i sprawdź szczelność połączeń kielichowych detektorem gazu."
-        ),
-        "E04 / P04 - High Discharge Temp (Przegrzanie tłoczenia sprężarki > 115 st.C)": (
-            "PROCEDURA KROK PO KROKU:\n"
-            "1. Sprawdź wtyczkę cewki zaworu rozprężnego (EEV) na płycie głównej agregatu (czy po resecie zasilania słychać tykanie EEV).\n"
-            "2. Jeśli zawór EEV działa: w układzie brakuje czynnika chłodniczego (nieszczelność). Zlokalizuj wyciek, zrób próbę azotową, próżnię i napełnij wagowo."
-        ),
-        "E05..E15 / T1..T4 Error (Błąd czujnika temperatury NTC)": (
-            "PROCEDURA KROK PO KROKU:\n"
-            "1. Wejdź w podgląd temperatur na sterowniku – znajdź czujnik pokazujący skrajną wartość (np. -39 st.C, 150 st.C lub kreski).\n"
-            "2. Wypnij wtyczkę tego czujnika z płyty i zmierz opór miernikiem (kOhm). Przy 20-25 st.C sprawny czujnik NTC 10k ma mieć ok. 10-12.5 kOhm. Jeśli pokazuje przerwę (OL) lub 0.0 -> wymień czujnik."
-        ),
-        "E09 / Comm Error (Brak komunikacji sterownika z jednostką zewnętrzną)": (
-            "PROCEDURA KROK PO KROKU:\n"
-            "1. Sprawdź przewód komunikacyjny RS485 (zaciski A i B). Upewnij się, że A idzie do A, a B do B.\n"
-            "2. Sprawdź zasilanie 230V/400V na listwie agregatu zewnętrznego."
-        )
+def get_default_tech_profile(name, pin, role_desc, umowa, base_sal):
+    return {
+        "pin": pin,
+        "pelne_dane": f"{name} - {role_desc}",
+        "telefon": "",
+        "umowa": umowa,
+        "wynagrodzenie_bazowe": base_sal,
+        "bhp_data": "2026-01-15",
+        "bhp_protokol": "Ważne",
+        "medycyna_data": "2026-01-10",
+        "medycyna_zakres": "Praca pow. 3m, SEP E+D, kat. B",
+        "urlopy_l4": [],
+        "notatki_poufne": "",
+        "narzedzia": [dict(x) for x in DOMYSLNE_NARZEDZIA],
+        "materialy": [dict(x) for x in DOMYSLNE_MATERIALY],
+        "flota": {
+            "nr_rej": "WPR 00000",
+            "przebieg_km": 120000,
+            "limit_olej_km": 130000,
+            "data_oc_przeglad": "2027-05-01"
+        }
     }
+
+DEFAULT_TECHS = {
+    "Leszek": get_default_tech_profile("Leszek", "4829", "Serwisant OZE", "Umowa o pracę", 6500.0),
+    "Mikołaj": get_default_tech_profile("Mikołaj", "7315", "Serwisant OZE", "B2B", 7000.0),
+    "Wojtek": get_default_tech_profile("Wojtek", "5942", "Serwisant OZE", "Umowa o pracę", 6000.0),
+    "Serwisant 4": get_default_tech_profile("Serwisant 4", "8164", "Wakat", "Umowa zlecenie", 6000.0)
 }
 
-POSTAL_PREFIX_COORDS = {
-    "00": (52.23, 21.01), "01": (52.25, 20.95), "02": (52.18, 21.00), "03": (52.27, 21.08),
-    "04": (52.22, 21.15), "05": (52.17, 20.80), "06": (52.88, 20.61), "07": (52.60, 21.80),
-    "08": (52.16, 22.28), "09": (52.55, 19.70), "10": (53.78, 20.48), "11": (54.03, 21.00),
-    "12": (53.60, 21.50), "13": (53.35, 19.90), "14": (53.85, 19.80), "15": (53.13, 23.16),
-    "16": (53.65, 23.10), "17": (52.75, 23.40), "18": (53.18, 22.06), "19": (53.83, 22.35),
-    "20": (51.25, 22.57), "21": (51.65, 22.80), "22": (51.05, 23.47), "23": (50.80, 22.30),
-    "24": (51.40, 21.97), "25": (50.87, 20.63), "26": (51.40, 21.15), "27": (50.85, 21.45),
-    "28": (50.45, 20.70), "29": (50.80, 19.95), "30": (50.06, 19.94), "31": (50.08, 20.00),
-    "32": (50.00, 19.65), "33": (50.01, 20.99), "34": (49.65, 19.95), "35": (50.04, 22.00),
-    "36": (50.25, 21.95), "37": (50.00, 22.68), "38": (49.68, 21.76), "39": (50.29, 21.42),
-    "40": (50.26, 19.02), "41": (50.30, 18.95), "42": (50.70, 19.15), "43": (49.95, 18.95),
-    "44": (50.20, 18.60), "45": (50.67, 17.92), "46": (50.75, 18.10), "47": (50.35, 18.20),
-    "48": (50.47, 17.33), "49": (50.75, 17.50), "50": (51.11, 17.04), "51": (51.15, 17.10),
-    "52": (51.07, 17.05), "53": (51.08, 16.98), "54": (51.14, 16.92), "55": (51.05, 17.25),
-    "56": (51.40, 17.35), "57": (50.44, 16.65), "58": (50.84, 16.30), "59": (51.20, 16.16),
-    "60": (52.41, 16.93), "61": (52.39, 16.95), "62": (52.35, 17.50), "63": (51.76, 17.80),
-    "64": (52.75, 16.60), "65": (51.94, 15.51), "66": (52.25, 15.25), "67": (51.66, 16.08),
-    "68": (51.63, 15.14), "69": (52.35, 14.65), "70": (53.43, 14.55), "71": (53.46, 14.50),
-    "72": (53.75, 14.90), "73": (53.34, 15.05), "74": (53.00, 14.60), "75": (54.19, 16.18),
-    "76": (54.46, 17.03), "77": (53.85, 17.25), "78": (53.70, 16.20), "80": (54.35, 18.65),
-    "81": (54.52, 18.53), "82": (54.10, 19.05), "83": (54.10, 18.45), "84": (54.60, 18.20),
-    "85": (53.12, 18.01), "86": (53.45, 18.55), "87": (53.01, 18.60), "88": (52.80, 18.25),
-    "89": (53.58, 17.85), "90": (51.76, 19.46), "91": (51.80, 19.42), "92": (51.75, 19.55),
-    "93": (51.71, 19.47), "94": (51.74, 19.38), "95": (51.88, 19.35), "96": (51.96, 20.15),
-    "97": (51.40, 19.70), "98": (51.60, 18.95), "99": (52.10, 19.25)
+DEFAULT_EMAIL_CONFIG = {
+    "smtp_server": "smtp.gmail.com",
+    "smtp_port": 587,
+    "sender_email": "",
+    "sender_password": "",
+    "email_montaz": "montaz@twojadomena.pl",
+    "email_technik": "technik@twojadomena.pl",
+    "handlowcy": [
+        {"nazwa": "Handlowiec 1 (Pompy / PV)", "email": "handlowiec1@twojadomena.pl", "rejon": "Cała Polska"},
+        {"nazwa": "Handlowiec 2 (Magazyny / Modernizacje)", "email": "handlowiec2@twojadomena.pl", "rejon": "Mazowieckie"}
+    ]
 }
 
 # ==========================================
-# 3. FUNKCJE POMOCNICZE (TELEFONY, GPS, GSHEETS)
+# 3. FUNKCJE POMOCNICZE (TELEFONY, GPS, KORYTARZ, GSHEETS, EMAIL)
 # ==========================================
 def extract_phone_numbers(raw_phone_str, raw_client_str=""):
     combined = f"{raw_phone_str} {raw_client_str}"
@@ -349,21 +195,18 @@ def extract_coords_from_row(row):
             offset = (int(full_zip[-2:]) - 50) * 0.003
             base_lat, base_lon = POSTAL_PREFIX_COORDS[prefix]
             return base_lat + offset, base_lon + offset
-    return 52.23, 21.01
+    return 52.08, 20.85
 
 def get_coords_for_postal(postal_str):
     match = re.search(r'\b(\d{2})\b', str(postal_str))
     if match:
         prefix = match.group(1)
         if prefix in POSTAL_PREFIX_COORDS:
-            full_digits = re.sub(r'\D', '', postal_str)
-            if len(full_digits) >= 5:
-                offset = (int(full_digits[-2:]) - 50) * 0.003
-            else:
-                offset = 0.0
+            full_digits = re.sub(r'\D', '', str(postal_str))
+            offset = (int(full_digits[-2:]) - 50) * 0.003 if len(full_digits) >= 5 else 0.0
             base_lat, base_lon = POSTAL_PREFIX_COORDS[prefix]
             return base_lat + offset, base_lon + offset
-    return 52.23, 21.01
+    return 52.08, 20.85
 
 def haversine_km(lat1, lon1, lat2, lon2):
     R = 6371.0
@@ -372,6 +215,103 @@ def haversine_km(lat1, lon1, lat2, lon2):
     dlambda = math.radians(lon2 - lon1)
     a = math.sin(dphi / 2.0)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2.0)**2
     return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+def distance_from_segment_km(p_lat, p_lon, a_lat, a_lon, b_lat, b_lon):
+    """Oblicza odległość punktu P od odcinka trasy A -> B w kilometrach (Korytarz trasy)."""
+    lat_scale = 111.32
+    lon_scale = 111.32 * math.cos(math.radians((a_lat + b_lat) / 2.0))
+    px, py = (p_lon - a_lon) * lon_scale, (p_lat - a_lat) * lat_scale
+    bx, by = (b_lon - a_lon) * lon_scale, (b_lat - a_lat) * lat_scale
+    seg_len_sq = bx * bx + by * by
+    if seg_len_sq == 0:
+        return math.hypot(px, py)
+    t = max(0.0, min(1.0, (px * bx + py * by) / seg_len_sq))
+    proj_x, proj_y = t * bx, t * by
+    return math.hypot(px - proj_x, py - proj_y)
+
+def estimate_route_economics(points_coords, base_coords, gross_revenue, parts_cost=0.0,
+                             hourly_rate=DEFAULT_HOURLY_RATE, fuel_price=DEFAULT_FUEL_PRICE,
+                             burn_l_100km=DEFAULT_BURN_L_100KM, onsite_hours_per_client=DEFAULT_ONSITE_HOURS):
+    """Liczy pełną pętlę trasy (Baza -> Punkty -> Baza), paliwo, czas jazdy, czas pracy i Czysty Zysk."""
+    if not points_coords:
+        return {
+            "road_km": 0.0, "drive_hours": 0.0, "onsite_hours": 0.0,
+            "fuel_cost": 0.0, "labor_drive_cost": 0.0, "labor_onsite_cost": 0.0,
+            "total_cost": 0.0, "net_profit": 0.0
+        }
+    remaining = list(points_coords)
+    curr_lat, curr_lon = base_coords
+    straight_km = 0.0
+    while remaining:
+        nearest_idx = min(range(len(remaining)), key=lambda i: haversine_km(curr_lat, curr_lon, remaining[i][0], remaining[i][1]))
+        nxt_lat, nxt_lon = remaining.pop(nearest_idx)
+        straight_km += haversine_km(curr_lat, curr_lon, nxt_lat, nxt_lon)
+        curr_lat, curr_lon = nxt_lat, nxt_lon
+    straight_km += haversine_km(curr_lat, curr_lon, base_coords[0], base_coords[1])
+
+    road_km = straight_km * ROAD_TORTUOSITY
+    drive_hours = road_km / DEFAULT_SPEED_KMH
+    onsite_hours = len(points_coords) * onsite_hours_per_client
+
+    fuel_cost = (road_km / 100.0) * burn_l_100km * fuel_price
+    labor_drive_cost = drive_hours * hourly_rate
+    labor_onsite_cost = onsite_hours * hourly_rate
+    total_cost = fuel_cost + labor_drive_cost + labor_onsite_cost + parts_cost
+    net_profit = gross_revenue - total_cost
+
+    return {
+        "road_km": round(road_km, 1),
+        "drive_hours": round(drive_hours, 1),
+        "onsite_hours": round(onsite_hours, 1),
+        "fuel_cost": round(fuel_cost, 2),
+        "labor_drive_cost": round(labor_drive_cost, 2),
+        "labor_onsite_cost": round(labor_onsite_cost, 2),
+        "total_cost": round(total_cost, 2),
+        "net_profit": round(net_profit, 2)
+    }
+
+def send_system_email(email_cfg, to_emails, subject, body_text, attachments=None):
+    sender = email_cfg.get("sender_email", "").strip()
+    password = email_cfg.get("sender_password", "").strip()
+    server_host = email_cfg.get("smtp_server", "smtp.gmail.com").strip()
+    port = int(email_cfg.get("smtp_port", 587))
+
+    if not sender or not password or not to_emails:
+        return False, "Brak skonfigurowanego konta nadawcy SMTP lub adresu odbiorcy w zakładce Ustawienia E-mail."
+
+    if isinstance(to_emails, str):
+        to_list = [x.strip() for x in to_emails.split(",") if x.strip()]
+    else:
+        to_list = [x.strip() for x in to_emails if str(x).strip()]
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = ", ".join(to_list)
+    msg.set_content(body_text)
+
+    if attachments:
+        for att in attachments:
+            try:
+                file_bytes = att.getvalue()
+                file_name = att.name
+                msg.add_attachment(file_bytes, maintype="application", subtype="octet-stream", filename=file_name)
+            except Exception:
+                pass
+
+    try:
+        if port == 465:
+            with smtplib.SMTP_SSL(server_host, port, timeout=10) as server:
+                server.login(sender, password)
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP(server_host, port, timeout=10) as server:
+                server.starttls()
+                server.login(sender, password)
+                server.send_message(msg)
+        return True, f"Wysłano e-mail do: {', '.join(to_list)}"
+    except Exception as e:
+        return False, f"Błąd wysyłki SMTP: {e}"
 
 def get_gsheet_client():
     scopes = [
@@ -390,15 +330,32 @@ def get_gsheet_client():
         return None
     return None
 
+def ensure_tech_profile_fields(profiles):
+    for t_name, p in profiles.items():
+        if "narzedzia" not in p or not isinstance(p["narzedzia"], list):
+            p["narzedzia"] = [dict(x) for x in DOMYSLNE_NARZEDZIA]
+        if "materialy" not in p or not isinstance(p["materialy"], list):
+            p["materialy"] = [dict(x) for x in DOMYSLNE_MATERIALY]
+        if "flota" not in p or not isinstance(p["flota"], dict):
+            p["flota"] = {
+                "nr_rej": "WPR 00000",
+                "przebieg_km": 120000,
+                "limit_olej_km": 130000,
+                "data_oc_przeglad": "2027-05-01"
+            }
+    return profiles
+
 def load_config_and_profiles():
     profiles = DEFAULT_TECHS.copy()
     logo_b64 = None
+    email_cfg = DEFAULT_EMAIL_CONFIG.copy()
     if os.path.exists(PROFILES_FILE):
         try:
             with open(PROFILES_FILE, "r", encoding="utf-8") as f:
                 saved = json.load(f)
                 profiles = saved.get("techs", DEFAULT_TECHS)
                 logo_b64 = saved.get("logo_b64", None)
+                email_cfg = saved.get("email_cfg", DEFAULT_EMAIL_CONFIG)
         except Exception:
             pass
     client = get_gsheet_client()
@@ -409,21 +366,28 @@ def load_config_and_profiles():
                 ws = sh.worksheet("Config_System")
                 raw_json = ws.acell("A1").value
                 raw_logo = ws.acell("B1").value
+                raw_email = ws.acell("C1").value
                 if raw_json:
                     profiles = json.loads(raw_json)
                 if raw_logo:
                     logo_b64 = raw_logo
+                if raw_email:
+                    email_cfg = json.loads(raw_email)
             except gspread.WorksheetNotFound:
                 ws = sh.add_worksheet(title="Config_System", rows="10", cols="5")
                 ws.update_acell("A1", json.dumps(profiles, ensure_ascii=False))
+                ws.update_acell("C1", json.dumps(email_cfg, ensure_ascii=False))
         except Exception:
             pass
-    return profiles, logo_b64
+    return ensure_tech_profile_fields(profiles), logo_b64, email_cfg
 
-def save_config_and_profiles(profiles, logo_b64=None):
-    if logo_b64 is None and "logo_b64" in st.session_state:
-        logo_b64 = st.session_state["logo_b64"]
-    payload = {"techs": profiles, "logo_b64": logo_b64}
+def save_config_and_profiles(profiles, logo_b64=None, email_cfg=None):
+    if logo_b64 is None:
+        logo_b64 = st.session_state.get("logo_b64", None)
+    if email_cfg is None:
+        email_cfg = st.session_state.get("email_cfg", DEFAULT_EMAIL_CONFIG)
+    profiles = ensure_tech_profile_fields(profiles)
+    payload = {"techs": profiles, "logo_b64": logo_b64, "email_cfg": email_cfg}
     try:
         with open(PROFILES_FILE, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -440,6 +404,8 @@ def save_config_and_profiles(profiles, logo_b64=None):
             ws.update_acell("A1", json.dumps(profiles, ensure_ascii=False))
             if logo_b64:
                 ws.update_acell("B1", logo_b64)
+            if email_cfg:
+                ws.update_acell("C1", json.dumps(email_cfg, ensure_ascii=False))
         except Exception:
             pass
 
@@ -463,12 +429,16 @@ REQUIRED_COLS = [
     "ID_Zgloszenia", "Klient", "Adres", "Kod_Pocztowy", "Miasto", "Telefon",
     "Typ_Instalacji", "Wymagany_Przeglad", "Opis_Zgloszenia", "Priorytet_Krytyczny", "Typ_Serwisu",
     "Serwisant", "Data_Planowana", "Status", "Naprawione_1_Wizyta",
-    "Kwota_Przewidywana", "Kwota_Koncowa", "Czas_Pracy_Min",
+    "Kwota_Przewidywana", "Zgoda_Klienta_Kwota", "Kwota_Koncowa", "Koszt_Materialow",
+    "Forma_Platnosci", "Gotowka_Rozliczona", "Czas_Pracy_Min",
     "Wyniki_Przegladu", "Zdjecia_Potwierdzone", "Zalecenia_Klienta",
-    "Notatka_Serwisanta", "Data_Zamkniecia", "Podpis_Zlozony"
+    "Notatka_Serwisanta", "Data_Zamkniecia", "Podpis_Zlozony",
+    "Do_Oddzwonienia", "Data_Oddzwonienia", "Potwierdzony_Tel", "Trudny_Klient",
+    "Potrzebne_Czesci", "Lead_Handlowy", "Oddelegowano_Dzial", "Oddelegowano_Email",
+    "Data_Oddelegowania", "Notatka_Dla_Dzialu", "Otrzymano_Oferte_Termin", "Ostatnie_Przypomnienie"
 ]
 
-NUMERIC_COLS = ["Kwota_Przewidywana", "Kwota_Koncowa", "Czas_Pracy_Min"]
+NUMERIC_COLS = ["Kwota_Przewidywana", "Zgoda_Klienta_Kwota", "Kwota_Koncowa", "Koszt_Materialow", "Czas_Pracy_Min"]
 
 def ensure_columns(df):
     if df is None or df.empty:
@@ -495,7 +465,7 @@ def ensure_columns(df):
     for c in df.columns:
         cl = c.lower()
         target = None
-        if ("klient" in cl or "nazwisko" in cl or "imie" in cl or "imię" in cl or "dane" in cl):
+        if ("klient" in cl or "nazwisko" in cl or "imie" in cl or "imię" in cl or cl == "dane"):
             target = "Klient"
         elif ("adres" in cl or "ulica" in cl):
             target = "Adres"
@@ -511,6 +481,8 @@ def ensure_columns(df):
             target = "Kwota_Przewidywana"
         elif ("data_serwisu" in cl or "data ser" in cl):
             target = "Data_Planowana"
+        elif ("platnosc" in cl or "płatność" in cl):
+            target = "Forma_Platnosci"
 
         if target and target not in used_targets:
             col_map[c] = target
@@ -528,15 +500,21 @@ def ensure_columns(df):
                 df[rc] = [f"ZGL-{i+1001}" for i in range(len(df))]
             elif rc == "Status":
                 df[rc] = "Nowe"
-            elif rc in ["Priorytet_Krytyczny", "Wymagany_Przeglad", "Zdjecia_Potwierdzone", "Podpis_Zlozony"]:
+            elif rc in [
+                "Priorytet_Krytyczny", "Wymagany_Przeglad", "Zdjecia_Potwierdzone",
+                "Podpis_Zlozony", "Do_Oddzwonienia", "Potwierdzony_Tel",
+                "Trudny_Klient", "Otrzymano_Oferte_Termin"
+            ]:
                 df[rc] = "Nie"
+            elif rc in ["Naprawione_1_Wizyta", "Gotowka_Rozliczona"]:
+                df[rc] = "Tak"
             elif rc == "Typ_Serwisu":
                 df[rc] = "Płatny"
-            elif rc == "Naprawione_1_Wizyta":
-                df[rc] = "Tak"
+            elif rc == "Forma_Platnosci":
+                df[rc] = "Przelew"
             elif rc == "Kwota_Przewidywana":
                 df[rc] = 650.0
-            elif rc in ["Kwota_Koncowa", "Czas_Pracy_Min"]:
+            elif rc in NUMERIC_COLS:
                 df[rc] = 0.0
             else:
                 df[rc] = ""
@@ -564,6 +542,10 @@ def ensure_columns(df):
         st_val = str(r["Status"]).strip().lower()
         if "zako" in st_val:
             df.at[idx, "Status"] = "Zakończone"
+        elif "częśc" in st_val or "czesc" in st_val:
+            df.at[idx, "Status"] = "Do zamówienia części"
+        elif "oddeleg" in st_val:
+            df.at[idx, "Status"] = "Oddelegowane"
         elif st_val == "" or st_val == "brak":
             df.at[idx, "Status"] = "Nowe"
 
@@ -596,12 +578,18 @@ def load_tickets():
                 "ID_Zgloszenia": "ZGL-1001", "Klient": "Jan Kowalski", "Adres": "ul. Słoneczna 12",
                 "Kod_Pocztowy": "05-800", "Miasto": "Pruszków", "Telefon": "500100200 / 600700800",
                 "Typ_Instalacji": "Pompa Ciepła ARGOM", "Wymagany_Przeglad": "Tak",
-                "Opis_Zgloszenia": "Brak grzania CO - błąd przepływu E03 + przegląd roczny",
+                "Opis_Zgloszenia": "Brak grzania CO - błąd przepływu AL007 + wymiana glikolu i anody",
                 "Priorytet_Krytyczny": "Tak", "Typ_Serwisu": "Płatny", "Serwisant": "Leszek",
                 "Data_Planowana": str(datetime.date.today()), "Status": "Zaplanowane",
-                "Naprawione_1_Wizyta": "Tak", "Kwota_Przewidywana": 850.0, "Kwota_Koncowa": 0.0,
-                "Czas_Pracy_Min": 0.0, "Wyniki_Przegladu": "", "Zdjecia_Potwierdzone": "Nie",
-                "Zalecenia_Klienta": "", "Notatka_Serwisanta": "", "Data_Zamkniecia": "", "Podpis_Zlozony": "Nie"
+                "Naprawione_1_Wizyta": "Tak", "Kwota_Przewidywana": 1120.0, "Zgoda_Klienta_Kwota": 1120.0,
+                "Kwota_Koncowa": 0.0, "Koszt_Materialow": 0.0, "Forma_Platnosci": "Gotówka pobrana",
+                "Gotowka_Rozliczona": "Tak", "Czas_Pracy_Min": 0.0, "Wyniki_Przegladu": "",
+                "Zdjecia_Potwierdzone": "Nie", "Zalecenia_Klienta": "", "Notatka_Serwisanta": "",
+                "Data_Zamkniecia": "", "Podpis_Zlozony": "Nie", "Do_Oddzwonienia": "Nie",
+                "Data_Oddzwonienia": "", "Potwierdzony_Tel": "Tak", "Trudny_Klient": "Nie",
+                "Potrzebne_Czesci": "", "Lead_Handlowy": "", "Oddelegowano_Dzial": "",
+                "Oddelegowano_Email": "", "Data_Oddelegowania": "", "Notatka_Dla_Dzialu": "",
+                "Otrzymano_Oferte_Termin": "Nie", "Ostatnie_Przypomnienie": ""
             }
         ])
 
@@ -625,97 +613,83 @@ def save_tickets(df):
         except Exception as e:
             st.warning(f"Zapisano lokalnie. Synchronizacja z Google Sheets napotkała problem: {e}")
 
-def generate_smart_routes(df, profiles, start_date, days_ahead=5, target_tech="Wszyscy"):
-    if target_tech != "Wszyscy":
-        pending = df[(df["Status"].isin(["Nowe", "Do zaplanowania", ""])) & (df["Serwisant"].isin(["", target_tech]))].copy()
-    else:
-        pending = df[df["Status"].isin(["Nowe", "Do zaplanowania", ""])].copy()
+# ==========================================
+# 4. WATCHDOG 3-DNIOWY DLA ODDELEGOWANYCH ZLECEŃ
+# ==========================================
+def check_and_send_3day_reminders(df, email_cfg):
+    today = datetime.date.today()
+    reminders_sent = 0
+    overdue_ids = []
+    changed = False
 
-    if pending.empty:
-        return [], "Brak nowych zgłoszeń spełniających kryteria do zaplanowania."
+    for idx, r in df.iterrows():
+        dzial = str(r.get("Oddelegowano_Dzial", "")).strip()
+        odbiorca = str(r.get("Oddelegowano_Email", "")).strip()
+        otrzymano = str(r.get("Otrzymano_Oferte_Termin", "Nie")).strip()
+        data_odd_str = str(r.get("Data_Oddelegowania", "")).strip()[:10]
+        ost_przyp_str = str(r.get("Ostatnie_Przypomnienie", "")).strip()[:10]
 
-    coords = pending.apply(extract_coords_from_row, axis=1)
-    pending["lat"] = [c[0] for c in coords]
-    pending["lon"] = [c[1] for c in coords]
-    pending["is_crit"] = pending.apply(
-        lambda r: 1 if str(r.get("Priorytet_Krytyczny", "")).lower() == "tak" or "awaria" in str(r.get("Opis_Zgloszenia", "")).lower() else 0,
-        axis=1
-    )
+        if dzial and odbiorca and otrzymano != "Tak" and data_odd_str:
+            try:
+                d_odd = datetime.date.fromisoformat(data_odd_str)
+                days_diff = (today - d_odd).days
+                if days_diff >= 3:
+                    overdue_ids.append(r["ID_Zgloszenia"])
+                    should_send = True
+                    if ost_przyp_str:
+                        try:
+                            d_ost = datetime.date.fromisoformat(ost_przyp_str)
+                            if (today - d_ost).days < 3:
+                                should_send = False
+                        except Exception:
+                            pass
+                    if should_send and email_cfg.get("sender_email") and email_cfg.get("sender_password"):
+                        subj = f"🚨 PRZYPOMNIENIE (Minęło {days_diff} dni): Brak oferty/terminu - {r['ID_Zgloszenia']} ({r['Klient']})"
+                        body_lines = [
+                            "Dzień dobry,",
+                            "",
+                            f"System PROMAG OZE przypomina o oddelegowanym zgłoszeniu z dnia {data_odd_str} ({dzial}), dla którego w systemie nadal nie odnotowano przygotowania oferty lub ustalenia terminu.",
+                            "",
+                            f"- ID Zgłoszenia: {r['ID_Zgloszenia']}",
+                            f"- Klient: {r['Klient']} (Tel: {r['Telefon']})",
+                            f"- Adres: {r['Kod_Pocztowy']} {r['Miasto']}, {r['Adres']}",
+                            f"- Urządzenie: {r['Typ_Instalacji']}",
+                            f"- Opis usterki: {r['Opis_Zgloszenia']}",
+                            f"- Wytyczne od Koordynatora: {r['Notatka_Dla_Dzialu']}",
+                            "",
+                            "Prosimy o pilny kontakt z klientem i informację zwrotną do Koordynatora Serwisu."
+                        ]
+                        body = "\n".join(body_lines)
+                        ok, _ = send_system_email(email_cfg, odbiorca, subj, body)
+                        if ok:
+                            df.at[idx, "Ostatnie_Przypomnienie"] = str(today)
+                            reminders_sent += 1
+                            changed = True
+            except Exception:
+                pass
 
-    pending = pending.sort_values(by=["is_crit", "Kwota_Przewidywana"], ascending=[False, False])
-    used_indices = set()
-    valid_clusters = []
-
-    for idx, seed in pending.iterrows():
-        if idx in used_indices:
-            continue
-        cluster_indices = [idx]
-        for cand_idx, cand in pending.iterrows():
-            if cand_idx == idx or cand_idx in used_indices:
-                continue
-            if len(cluster_indices) >= 4:
-                break
-            dist = haversine_km(seed["lat"], seed["lon"], cand["lat"], cand["lon"])
-            if dist <= 50.0:
-                cluster_indices.append(cand_idx)
-
-        cluster_df = pending.loc[cluster_indices]
-        total_rev = float(cluster_df["Kwota_Przewidywana"].sum())
-        crit_count = int(cluster_df["is_crit"].sum())
-
-        if total_rev >= 1200.0 or crit_count >= 2:
-            for c_i in cluster_indices:
-                used_indices.add(c_i)
-            cities = [m for m in cluster_df["Miasto"].astype(str).unique() if m.strip()]
-            if not cities:
-                cities = [str(a)[:20] for a in cluster_df["Adres"].astype(str).unique()[:2]]
-            valid_clusters.append({
-                "indices": cluster_indices,
-                "total_rev": total_rev,
-                "crit_count": crit_count,
-                "miasta": ", ".join(cities),
-                "count": len(cluster_indices)
-            })
-
-    if not valid_clusters:
-        return [], "Żaden z klastrów nie spełnił warunku min. 1200 zł lub min. 2 zgłoszeń krytycznych w promieniu 50 km."
-
-    tech_names = [target_tech] if target_tech != "Wszyscy" else list(profiles.keys())
-    proposals = []
-    cluster_ptr = 0
-
-    for d_offset in range(days_ahead):
-        curr_date = start_date + datetime.timedelta(days=d_offset)
-        curr_date_str = str(curr_date)
-        for t_name in tech_names:
-            if cluster_ptr >= len(valid_clusters):
-                break
-            if is_tech_available(t_name, curr_date_str, profiles):
-                cl = valid_clusters[cluster_ptr]
-                cl["serwisant"] = t_name
-                cl["data"] = curr_date_str
-                proposals.append(cl)
-                cluster_ptr += 1
-
-    return proposals, f"Wygenerowano {len(proposals)} opłacalnych tras (dla: {target_tech})."
+    if changed:
+        save_tickets(df)
+    return overdue_ids, reminders_sent
 
 def calculate_tech_metrics(df, tech_name):
     tech_df = df[df["Serwisant"] == tech_name]
     closed_df = tech_df[tech_df["Status"] == "Zakończone"].copy()
     total_closed = len(closed_df)
-    if total_closed > 0:
-        ftfr_count = len(closed_df[closed_df["Naprawione_1_Wizyta"] == "Tak"])
-        ftfr_pct = round((ftfr_count / total_closed) * 100.0, 1)
-    else:
-        ftfr_pct = 100.0
+    ftfr_pct = round((len(closed_df[closed_df["Naprawione_1_Wizyta"] == "Tak"]) / total_closed) * 100.0, 1) if total_closed > 0 else 100.0
 
     paid_count = len(closed_df[closed_df["Typ_Serwisu"] == "Płatny"])
     warranty_count = len(closed_df[closed_df["Typ_Serwisu"] == "Gwarancyjny"])
+    leads_count = len(tech_df[tech_df["Lead_Handlowy"].astype(str).str.strip() != ""])
+
+    unsettled_cash_df = closed_df[(closed_df["Forma_Platnosci"] == "Gotówka pobrana") & (closed_df["Gotowka_Rozliczona"] != "Tak")]
+    cash_in_hand = float(unsettled_cash_df["Kwota_Koncowa"].sum())
 
     current_ym = datetime.date.today().strftime("%Y-%m")
     closed_df["ym"] = closed_df["Data_Zamkniecia"].astype(str).str.slice(0, 7)
     monthly_df = closed_df[(closed_df["ym"] == current_ym) | (closed_df["ym"] == "")]
     monthly_revenue = float(monthly_df["Kwota_Koncowa"].sum())
+    monthly_parts_cost = float(monthly_df["Koszt_Materialow"].sum())
 
     missing_tier_1 = max(0.0, COMMISSION_TIER_1 - monthly_revenue)
     missing_tier_2 = max(0.0, COMMISSION_TIER_2 - monthly_revenue)
@@ -735,20 +709,32 @@ def calculate_tech_metrics(df, tech_name):
         "ftfr_pct": ftfr_pct,
         "paid_count": paid_count,
         "warranty_count": warranty_count,
+        "leads_count": leads_count,
+        "cash_in_hand": cash_in_hand,
         "monthly_revenue": monthly_revenue,
+        "monthly_parts_cost": monthly_parts_cost,
         "missing_tier_1": missing_tier_1,
         "missing_tier_2": missing_tier_2,
         "commission_pln": commission_pln,
         "active_rate_str": active_rate_str
     }
 
+def get_low_stock_items(tech_profile):
+    low = []
+    for item in tech_profile.get("materialy", []):
+        qty = int(item.get("ilosc", 0))
+        if qty <= 1:
+            low.append(f"{item.get('nazwa')} (zostało: {qty} szt.)")
+    return low
+
 # ==========================================
-# 5. INICJALIZACJA SESJI I TRWAŁE LOGOWANIE
+# 5. INICJALIZACJA SESJI I LOGOWANIE Z AUTO-PIN
 # ==========================================
-if "profiles" not in st.session_state or "logo_b64" not in st.session_state:
-    p_loaded, l_loaded = load_config_and_profiles()
+if "profiles" not in st.session_state or "logo_b64" not in st.session_state or "email_cfg" not in st.session_state:
+    p_loaded, l_loaded, e_loaded = load_config_and_profiles()
     st.session_state["profiles"] = p_loaded
     st.session_state["logo_b64"] = l_loaded
+    st.session_state["email_cfg"] = e_loaded
 
 if "df_tickets" not in st.session_state:
     st.session_state["df_tickets"] = load_tickets()
@@ -767,7 +753,6 @@ if "active_ticket_id" not in st.session_state:
 if st.session_state["logged_role"] is None:
     qp_user = st.query_params.get("user", None)
     qp_token = st.query_params.get("token", None)
-    
     if qp_user == "Koordynator" and qp_token == PIN_KOORDYNATOR:
         st.session_state["logged_role"] = "koordynator"
         st.session_state["logged_user"] = "Koordynator"
@@ -834,20 +819,11 @@ if st.session_state["logged_role"] is None:
                     st.error("Nieprawidłowy kod PIN serwisanta.")
 
     with col_onboard:
-        st.subheader("🎓 Dla nowych pracowników")
-        st.info("Rozpoczynasz pracę w zespole serwisowym? Sprawdź standardy obsługi i wymogi dokumentacji zdjęciowej.")
-        if st.button("📘 Otwórz Szkolenie Wstępne (Onboarding)"):
-            st.session_state["show_onboarding"] = not st.session_state.get("show_onboarding", False)
-        if st.session_state.get("show_onboarding", False):
-            with st.container(border=True):
-                st.markdown("""
-                ### Standard Wizyty Serwisowej PROMAG OZE
-                1. **Kontakt i kultura pracy** – zadzwoń lub wyślij SMS z aplikacji przed dojazdem.
-                2. **Obowiązkowe zdjęcia** – zawsze wykonaj zdjęcie tabliczki znamionowej urządzenia oraz instalacji przed i po naprawie. Bez potwierdzenia zdjęć system nie pozwoli zamknąć zlecenia!
-                3. **Diagnostyka i Przegląd** – korzystaj z wbudowanej Ścieżki Diagnostycznej (Deye, GoodWe, Argom) oraz walidatora pomiarów glikolu (refraktometr + pasek pH).
-                """)
+        st.subheader("🎓 Standardy Pracy i Baza Wiedzy")
+        st.info("Kody błędów Deye (F01-F64), GoodWe, Argom (AL001-AL174) oraz instrukcje Wi-Fi są dostępne bezpośrednio z ekranu każdego zlecenia.")
     st.stop()
 
+# Nagłówek po zalogowaniu
 top_c1, top_c2, top_c3 = st.columns([2, 2, 1])
 with top_c1:
     render_brand_logo(max_width=200, centered=False)
@@ -865,28 +841,41 @@ with top_c3:
 st.divider()
 
 # ==========================================
-# 6. PANEL SERWISANTA
+# 6. PANEL SERWISANTA (Z MAGAZYNEM NA AUCIE, ALERTAMI <=1 SZT, FLOTĄ I LEADAMI)
 # ==========================================
 if st.session_state["logged_role"] == "serwisant":
     tech_name = st.session_state["logged_user"]
     df = st.session_state["df_tickets"]
+    profiles = st.session_state["profiles"]
+    my_prof = profiles[tech_name]
     metrics = calculate_tech_metrics(df, tech_name)
 
+    # 1. ALERTY MAGAZYNOWE NA SAMOCHODZIE (<= 1 szt.)
+    low_stock = get_low_stock_items(my_prof)
+    if low_stock:
+        st.markdown(f"""
+        <div class="kpi-card-danger">
+            <div style="font-size:15px; font-weight:800;">🚨 PILNE: UZUPEŁNIJ ZAPASY MATERIAŁOWE NA AUCIE!</div>
+            <div style="font-size:14px; margin-top:4px;">Kończą się pozycje (<= 1 szt.): <b>{", ".join(low_stock)}</b></div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # 2. KARTY KPI SERWISANTA
     m_col1, m_col2, m_col3 = st.columns([1.4, 1.4, 1])
     with m_col1:
         if metrics["missing_tier_1"] > 0:
             headline = f"Brakuje: {metrics['missing_tier_1']:,.0f} zł do prowizji 3%"
-            subline = f"Próg I (15 000 zł) | Do progu 4% (30 000 zł) brakuje: {metrics['missing_tier_2']:,.0f} zł"
+            subline = f"Próg I (15 000 zł) | Do 4% brakuje: {metrics['missing_tier_2']:,.0f} zł"
         elif metrics["missing_tier_2"] > 0:
-            headline = f"🔥 Masz już 3%! Brakuje: {metrics['missing_tier_2']:,.0f} zł do 4%"
-            subline = f"Wypracowany obrót: {metrics['monthly_revenue']:,.0f} zł (Premia: {metrics['commission_pln']:,.0f} zł)"
+            headline = f"🔥 Masz 3%! Brakuje: {metrics['missing_tier_2']:,.0f} zł do 4%"
+            subline = f"Obrót: {metrics['monthly_revenue']:,.0f} zł (Premia: {metrics['commission_pln']:,.0f} zł)"
         else:
             headline = "🏆 Maksymalny próg 4% zdobyty!"
-            subline = f"Wypracowany obrót: {metrics['monthly_revenue']:,.0f} zł (Premia: {metrics['commission_pln']:,.0f} zł)"
+            subline = f"Obrót: {metrics['monthly_revenue']:,.0f} zł (Premia: {metrics['commission_pln']:,.0f} zł)"
 
         st.markdown(f"""
         <div class="kpi-card">
-            <div class="kpi-title">🎯 Twój Cel Prowizyjny (Bieżący Miesiąc)</div>
+            <div class="kpi-title">🎯 Cel Prowizyjny (Miesiąc)</div>
             <div class="kpi-value">{headline}</div>
             <div class="kpi-sub">{subline}</div>
         </div>
@@ -895,30 +884,53 @@ if st.session_state["logged_role"] == "serwisant":
     with m_col2:
         st.markdown(f"""
         <div class="kpi-card kpi-card-warn">
-            <div class="kpi-title">⚡ Skuteczność 1. Wizyty (First-Time Fix)</div>
-            <div class="kpi-value">{metrics['ftfr_pct']}% naprawionych od ręki</div>
-            <div class="kpi-sub">Obsłużone: {metrics['total_closed']} (Płatne: {metrics['paid_count']} | Gwarancyjne: {metrics['warranty_count']})</div>
+            <div class="kpi-title">⚡ Skuteczność 1. Wizyty & Kasa</div>
+            <div class="kpi-value">{metrics['ftfr_pct']}% | Gotówka przy sobie: {metrics['cash_in_hand']:,.0f} zł</div>
+            <div class="kpi-sub">Obsłużone: {metrics['total_closed']} | Leady handlowe: {metrics['leads_count']}</div>
         </div>
         """, unsafe_allow_html=True)
 
     with m_col3:
-        st.write("")
-        if st.button("🩺 ŚCIEŻKA DIAGNOSTYCZNA / KODY BŁĘDÓW"):
+        if st.button("🩺 KODY BŁĘDÓW / WI-FI"):
             st.session_state["show_kb"] = not st.session_state.get("show_kb", False)
-
-    progress_val = min(1.0, float(metrics["monthly_revenue"] / COMMISSION_TIER_2))
-    st.progress(progress_val, text=f"Postęp obrotu w tym miesiącu: {metrics['monthly_revenue']:,.0f} zł / 30 000 zł ({metrics['active_rate_str']})")
+        if st.button("🚐 MÓJ MAGAZYN / AUTO"):
+            st.session_state["show_van"] = not st.session_state.get("show_van", False)
 
     if st.session_state.get("show_kb", False):
         with st.container(border=True):
-            st.subheader("🩺 Interaktywna Ścieżka Diagnostyczna (Deye / GoodWe / Argom)")
-            kb_cat = st.selectbox("Wybierz urządzenie:", list(DIAGNOSTYKA_BAZA.keys()), key="kb_cat_top")
-            kb_err = st.selectbox("Wybierz kod błędu lub objaw z wyświetlacza:", list(DIAGNOSTYKA_BAZA[kb_cat].keys()), key="kb_err_top")
-            st.info(DIAGNOSTYKA_BAZA[kb_cat][kb_err])
+            st.subheader("🩺 Interaktywna Baza Wiedzy (Deye / GoodWe / Argom / Magazyny)")
+            kb_tab1, kb_tab2 = st.tabs(["🔍 Kody Błędów i Naprawa", "📶 Konfiguracja Wi-Fi i Konserwacja"])
+            with kb_tab1:
+                kb_cat = st.selectbox("Wybierz urządzenie:", list(DIAGNOSTYKA_BAZA.keys()), key="kb_cat_top")
+                kb_err = st.selectbox("Wybierz kod błędu:", list(DIAGNOSTYKA_BAZA[kb_cat].keys()), key="kb_err_top")
+                st.info(DIAGNOSTYKA_BAZA[kb_cat][kb_err])
+            with kb_tab2:
+                st.markdown(INSTRUKCJE_KONFIGURACJI_TEXT)
+
+    if st.session_state.get("show_van", False):
+        with st.container(border=True):
+            st.subheader(f"🚐 Wyposażenie i Stan Magazynowy na Aucie ({tech_name})")
+            v_c1, v_c2, v_c3 = st.columns([1.2, 1, 1])
+            with v_c1:
+                st.markdown("**📦 Materiały zużywalne na aucie:**")
+                st.dataframe(pd.DataFrame(my_prof.get("materialy", []))[["nazwa", "ilosc", "cena_klienta"]], use_container_width=True, hide_index=True)
+            with v_c2:
+                st.markdown("**🧰 Przypisane narzędzia:**")
+                st.dataframe(pd.DataFrame(my_prof.get("narzedzia", [])), use_container_width=True, hide_index=True)
+            with v_c3:
+                st.markdown("**🚗 Karta Floty (Stan licznika):**")
+                flota = my_prof.get("flota", {})
+                new_odo = st.number_input("Aktualny przebieg z licznika [km]:", min_value=0, step=100, value=int(flota.get("przebieg_km", 120000)))
+                if st.button("💾 Zapisz stan licznika"):
+                    my_prof["flota"]["przebieg_km"] = int(new_odo)
+                    save_config_and_profiles(profiles)
+                    st.success("Zaktualizowano przebieg pojazdu!")
+                if int(flota.get("limit_olej_km", 130000)) - new_odo <= 1000:
+                    st.error("🚨 Zbliża się wymiana oleju w busie (< 1000 km)!")
 
     st.divider()
 
-    my_tickets = df[(df["Serwisant"] == tech_name) & (df["Status"] != "Zakończone")].copy()
+    my_tickets = df[(df["Serwisant"] == tech_name) & (df["Status"].isin(["Zaplanowane", "W trakcie"]))].copy()
 
     if my_tickets.empty:
         st.success("🎉 Wszystkie zaplanowane dla Ciebie zlecenia zostały zrealizowane!")
@@ -931,17 +943,21 @@ if st.session_state["logged_role"] == "serwisant":
 
         if st.session_state["active_day"] is None:
             st.subheader("📅 Twoje zaplanowane dni wyjazdowe (Trasy)")
-            st.caption("Zlecenia są pogrupowane na pojedyncze dni. Kliknij **Rozpocznij dzień**, aby odblokować listę klientów z danego dnia.")
-
             unique_days = sorted(my_tickets["Data_Grupa"].unique())
             for day_str in unique_days:
                 day_cluster = my_tickets[my_tickets["Data_Grupa"] == day_str]
                 pts_count = len(day_cluster)
-                cities_list = ", ".join([m for m in day_cluster["Miasto"].astype(str).unique() if m.strip() != ""])
-                if not cities_list:
-                    cities_list = ", ".join([str(a)[:22] for a in day_cluster["Adres"].astype(str).unique()[:3]])
+                cities_list = ", ".join([m for m in day_cluster["Miasto"].astype(str).unique() if m.strip()]) or "Trasa lokalna"
                 est_rev = float(day_cluster["Kwota_Przewidywana"].sum())
                 crit_cnt = len(day_cluster[day_cluster["Priorytet_Krytyczny"] == "Tak"])
+
+                # Inteligentna Checklista Załadunku rano na podstawie opisów zleceń z tego dnia
+                opisy_dnia = " ".join(day_cluster["Opis_Zgloszenia"].astype(str).tolist()).lower()
+                co_spakowac = []
+                for m_item in my_prof.get("materialy", []):
+                    klucz = str(m_item.get("slowo_klucz", "")).lower()
+                    if klucz and klucz in opisy_dnia:
+                        co_spakowac.append(f"{m_item['nazwa']} (masz na aucie: {m_item['ilosc']} szt.)")
 
                 is_today = (day_str == today_str)
                 card_class = "day-card day-card-today" if is_today else "day-card"
@@ -953,22 +969,15 @@ if st.session_state["logged_role"] == "serwisant":
                         st.markdown(f"""
                         <div class="{card_class}">
                             <div style="font-size:13px; color:#38bdf8; font-weight:700;">{badge_today}</div>
-                            <div style="font-size:22px; font-weight:800; margin-top:2px;">📅 Data trasy: {day_str}</div>
-                            <div style="font-size:15px; margin-top:6px;">📍 <b>Lokalizacje:</b> {cities_list}</div>
+                            <div style="font-size:21px; font-weight:800;">📅 Data trasy: {day_str}</div>
+                            <div style="font-size:15px; margin-top:4px;">📍 <b>Lokalizacje:</b> {cities_list}</div>
                             <div style="font-size:14px; color:#cbd5e1; margin-top:4px;">
-                                🛠️ Punktów: <b>{pts_count}</b> &nbsp;|&nbsp;
-                                💰 Szacowany obrót: <b>{est_rev:,.0f} zł</b> &nbsp;|&nbsp;
-                                🔥 Krytyczne: <b>{crit_cnt}</b>
+                                🛠️ Punktów: <b>{pts_count}</b> | 💰 Szacowany obrót: <b>{est_rev:,.0f} zł</b> | 🔥 Krytyczne: <b>{crit_cnt}</b>
                             </div>
                         </div>
                         """, unsafe_allow_html=True)
-
-                        with st.expander(f"👁️ Podgląd punktów w trasie na dzień {day_str} ({pts_count})"):
-                            for idx_pt, (_, r_pt) in enumerate(day_cluster.iterrows(), 1):
-                                crit_tag = " 🔥 [AWARIA]" if r_pt["Priorytet_Krytyczny"] == "Tak" else ""
-                                rev_tag = " 🔍 [PRZEGLĄD]" if r_pt.get("Wymagany_Przeglad") == "Tak" else ""
-                                st.markdown(f"**{idx_pt}. {r_pt['Adres']}** ({r_pt['Miasto']}) – *{r_pt['Typ_Instalacji']}*{crit_tag}{rev_tag}")
-
+                        if co_spakowac:
+                            st.warning("📦 **Checklista załadunku przed wyjazdem (z opisów usterek):** " + ", ".join(co_spakowac))
                     with c_day_btn:
                         st.write("")
                         if st.button(f"🚀 ROZPOCZNIJ DZIEŃ ({day_str})", key=f"start_day_{day_str}", type="primary"):
@@ -983,623 +992,902 @@ if st.session_state["logged_role"] == "serwisant":
             head_c1, head_c2 = st.columns([2.2, 1])
             with head_c1:
                 st.subheader(f"🚚 Aktywny dzień pracy: {act_day}")
-                st.caption("Kolejność odwiedzin ustalasz sam. Zadzwoń lub wyślij SMS do klienta i kliknij **Rozpocznij zlecenie**.")
             with head_c2:
-                if st.button("⬅️ Zmień dzień / Wróć do harmonogramu"):
+                if st.button("⬅️ Wróć do wyboru dnia"):
                     st.session_state["active_day"] = None
                     st.session_state["active_ticket_id"] = None
                     st.rerun()
 
-            if day_tickets.empty:
-                st.success(f"🎉 Wszystkie zlecenia zaplanowane na dzień **{act_day}** zostały zakończone!")
-                if st.button("📅 Wróć do wyboru kolejnego dnia", type="primary"):
-                    st.session_state["active_day"] = None
-                    st.rerun()
-            else:
-                for idx_card, (t_idx, t_row) in enumerate(day_tickets.iterrows(), 1):
-                    t_id = t_row["ID_Zgloszenia"]
-                    is_crit = (str(t_row["Priorytet_Krytyczny"]) == "Tak")
-                    is_przeglad = (str(t_row.get("Wymagany_Przeglad", "Nie")) == "Tak")
-                    status_badge = "🟡 W TRAKCIE" if t_row["Status"] == "W trakcie" else "⏳ OCZEKUJE"
-                    crit_badge = " 🔥 AWARIA" if is_crit else ""
-                    przeg_badge = " 🔍 PRZEGLĄD" if is_przeglad else ""
+            for idx_card, (t_idx, t_row) in enumerate(day_tickets.iterrows(), 1):
+                t_id = t_row["ID_Zgloszenia"]
+                is_crit = (str(t_row["Priorytet_Krytyczny"]) == "Tak")
+                is_trudny = (str(t_row.get("Trudny_Klient", "Nie")) == "Tak")
+                zgoda_kw = float(t_row.get("Zgoda_Klienta_Kwota", 0.0))
 
-                    with st.container(border=True):
-                        st.markdown(f"#### Punkt #{idx_card}: **{t_row['Klient']}** `{status_badge}` {crit_badge} {przeg_badge}")
-                        col_d1, col_d2, col_d3 = st.columns([1.4, 1.3, 1.1])
-
-                        with col_d1:
-                            st.markdown(f"📍 **Adres:** `{t_row['Kod_Pocztowy']} {t_row['Miasto']}, {t_row['Adres']}`")
-                            st.markdown(f"🔧 **Urządzenie:** {t_row['Typ_Instalacji']} ({t_row['Typ_Serwisu']})")
-                            st.markdown(f"📝 **Opis:** {t_row['Opis_Zgloszenia']}")
-
-                        with col_d2:
-                            phones = extract_phone_numbers(str(t_row["Telefon"]), str(t_row["Klient"]))
-                            if phones:
-                                for p_idx, p_num in enumerate(phones, 1):
-                                    pc1, pc2 = st.columns(2)
-                                    with pc1:
-                                        st.link_button(f"📞 Zadzwoń ({p_num})", f"tel:{p_num}")
-                                    with pc2:
-                                        sms_txt = f"Dzien dobry, tu serwis PROMAG OZE. Dzisiaj realizujemy zgloszenie pod adresem {t_row['Adres']}. O ktorej godzinie bedzie Pan/Pani w domu?"
-                                        st.link_button(f"💬 SMS ({p_num})", f"sms:{p_num}?body={sms_txt.replace(' ', '%20')}")
-                            else:
-                                st.warning("Brak wykrytego numeru telefonu w karcie.")
-
-                            maps_q = f"{t_row['Adres']} {t_row['Kod_Pocztowy']} {t_row['Miasto']}".replace(" ", "+")
-                            st.link_button("🗺️ Nawiguj w Google Maps", f"https://www.google.com/maps/search/?api=1&query={maps_q}")
-
-                        with col_d3:
-                            st.markdown(f"💰 **Szacowana kwota:** `{float(t_row['Kwota_Przewidywana']):,.0f} zł`")
-                            if st.button(f"🛠️ ROZPOCZNIJ ZLECENIE ({t_id})", key=f"start_ticket_{t_id}", type="primary"):
-                                df.loc[t_idx, "Status"] = "W trakcie"
-                                save_tickets(df)
-                                st.session_state["active_ticket_id"] = t_id
-                                st.rerun()
+                with st.container(border=True):
+                    if is_trudny:
+                        st.error("🚩 **UWAGA: TRUDNY KLIENT / WYMAGANA PRZEDPŁATA LUB GOTÓWKA PRZED PRACĄ!**")
+                    st.markdown(f"#### Punkt #{idx_card}: **{t_row['Klient']}** ({t_id}) {'🔥 AWARIA' if is_crit else ''}")
+                    col_d1, col_d2, col_d3 = st.columns([1.4, 1.3, 1.1])
+                    with col_d1:
+                        st.markdown(f"📍 **Adres:** `{t_row['Kod_Pocztowy']} {t_row['Miasto']}, {t_row['Adres']}`")
+                        st.markdown(f"🔧 **Urządzenie:** {t_row['Typ_Instalacji']} ({t_row['Typ_Serwisu']})")
+                        st.markdown(f"📝 **Opis:** {t_row['Opis_Zgloszenia']}")
+                        if zgoda_kw > 0:
+                            st.success(f"✅ **Klient zaakceptował telefonicznie kwotę do: {zgoda_kw:,.0f} zł**")
+                    with col_d2:
+                        phones = extract_phone_numbers(str(t_row["Telefon"]), str(t_row["Klient"]))
+                        for p_num in phones:
+                            pc1, pc2 = st.columns(2)
+                            with pc1:
+                                st.link_button(f"📞 Zadzwoń ({p_num})", f"tel:{p_num}")
+                            with pc2:
+                                sms_txt = f"Dzien dobry, tu serwis PROMAG OZE. Dzisiaj realizujemy zgloszenie pod adresem {t_row['Adres']}. O ktorej godzinie bedzie Pan/Pani w domu?"
+                                st.link_button(f"💬 SMS ({p_num})", f"sms:{p_num}?body={sms_txt.replace(' ', '%20')}")
+                        maps_q = f"{t_row['Adres']} {t_row['Kod_Pocztowy']} {t_row['Miasto']}".replace(" ", "+")
+                        st.link_button("🗺️ Nawiguj w Google Maps", f"https://www.google.com/maps/search/?api=1&query={maps_q}")
+                    with col_d3:
+                        st.markdown(f"💰 **Wycena wstępna:** `{float(t_row['Kwota_Przewidywana']):,.0f} zł`")
+                        if st.button(f"🛠️ ROZPOCZNIJ ZLECENIE ({t_id})", key=f"start_t_{t_id}", type="primary"):
+                            df.loc[t_idx, "Status"] = "W trakcie"
+                            save_tickets(df)
+                            st.session_state["active_ticket_id"] = t_id
+                            st.rerun()
 
         elif st.session_state["active_ticket_id"] is not None:
             selected_id = st.session_state["active_ticket_id"]
             act_day = st.session_state["active_day"]
-
             matching_rows = df[df["ID_Zgloszenia"] == selected_id]
             if matching_rows.empty:
                 st.session_state["active_ticket_id"] = None
                 st.rerun()
-
             t_idx = matching_rows.index[0]
             t_row = df.loc[t_idx]
 
             nav_c1, nav_c2 = st.columns([2.2, 1])
             with nav_c1:
-                st.subheader(f"🛠️ Obsługa zlecenia: {selected_id} (Dzień: {act_day})")
+                st.subheader(f"🛠️ Obsługa zlecenia: {selected_id} ({t_row['Klient']})")
             with nav_c2:
                 if st.button("⬅️ Wróć do listy klientów z tego dnia"):
                     st.session_state["active_ticket_id"] = None
                     st.rerun()
 
-            c_info1, c_info2 = st.columns([1.3, 1])
-            with c_info1:
-                st.markdown(f"### 👤 Klient: **{t_row['Klient']}**")
-                st.markdown(f"📍 **Adres:** `{t_row['Kod_Pocztowy']} {t_row['Miasto']}, {t_row['Adres']}`")
-                st.markdown(f"🔧 **Urządzenie:** `{t_row['Typ_Instalacji']}` | **Typ:** `{t_row['Typ_Serwisu']}`")
-                st.markdown(f"📝 **Opis zgłoszenia:** {t_row['Opis_Zgloszenia']}")
+            if float(t_row.get("Zgoda_Klienta_Kwota", 0.0)) > 0:
+                st.info(f"💡 **Ustalenia z biura:** Klient wyraził telefonicznie zgodę na koszt naprawy do kwoty **{float(t_row['Zgoda_Klienta_Kwota']):,.0f} zł**.")
 
-            with c_info2:
-                phones = extract_phone_numbers(str(t_row["Telefon"]), str(t_row["Klient"]))
-                for p_num in phones:
-                    p_col_a, p_col_b = st.columns(2)
-                    with p_col_a:
-                        st.link_button(f"📞 Zadzwoń: {p_num}", f"tel:{p_num}")
-                    with p_col_b:
-                        sms_body = f"Dzien dobry, tu serwis PROMAG OZE. Jestem w drodze pod adres {t_row['Adres']}."
-                        st.link_button(f"💬 SMS: {p_num}", f"sms:{p_num}?body={sms_body.replace(' ', '%20')}")
-                maps_query = f"{t_row['Adres']} {t_row['Kod_Pocztowy']} {t_row['Miasto']}".replace(" ", "+")
-                st.link_button("🗺️ Nawiguj w Google Maps", f"https://www.google.com/maps/search/?api=1&query={maps_query}")
-
-            st.divider()
-
-            with st.expander("🩺 NIE WIESZ CO SIĘ DZIEJE Z URZĄDZENIEM? Kliknij, aby otworzyć Ścieżkę Diagnostyczną", expanded=False):
-                inst_lower = str(t_row["Typ_Instalacji"]).lower()
-                default_cat_idx = 0
-                if "goodwe" in inst_lower:
-                    default_cat_idx = 1
-                elif "pomp" in inst_lower or "argom" in inst_lower or "solar" in inst_lower:
-                    default_cat_idx = 2
-
-                diag_cat = st.selectbox("Wybierz diagnozowany sprzęt:", list(DIAGNOSTYKA_BAZA.keys()), index=default_cat_idx, key="diag_cat_ticket")
-                diag_err = st.selectbox("Wybierz kod błędu lub objaw usterki:", list(DIAGNOSTYKA_BAZA[diag_cat].keys()), key="diag_err_ticket")
+            with st.expander("🩺 Ścieżka Diagnostyczna (Kody Błędów Deye / GoodWe / Argom)", expanded=False):
+                diag_cat = st.selectbox("Wybierz sprzęt:", list(DIAGNOSTYKA_BAZA.keys()), key="diag_cat_t")
+                diag_err = st.selectbox("Wybierz kod błędu:", list(DIAGNOSTYKA_BAZA[diag_cat].keys()), key="diag_err_t")
                 st.warning(DIAGNOSTYKA_BAZA[diag_cat][diag_err])
 
+            # 1. PROTOKÓŁ PRZEGLĄDU I POMIARÓW
             przeglad_summary_lines = []
-            need_inspection = (
-                str(t_row.get("Wymagany_Przeglad", "Nie")) == "Tak"
-                or "przegl" in str(t_row["Opis_Zgloszenia"]).lower()
-            )
-            enable_inspection = st.checkbox(
-                "🔍 Wykonuję przegląd techniczny urządzenia (Wypełnij protokół pomiarowy i walidator norm)",
-                value=need_inspection
-            )
-
+            need_insp = (str(t_row.get("Wymagany_Przeglad", "Nie")) == "Tak" or "przegl" in str(t_row["Opis_Zgloszenia"]).lower())
+            enable_inspection = st.checkbox("🔍 Wypełnij Protokół Przeglądu i Walidator Norm (Glikol / pH / Riso)", value=need_insp)
             if enable_inspection:
                 with st.container(border=True):
-                    st.markdown("### 📋 Protokół Przeglądu Urządzenia i Walidacja Norm na Żywo")
-                    insp_type = st.radio(
-                        "Wybierz rodzaj kontrolowanej instalacji:",
-                        ["Pompa Ciepła / Kolektory Słoneczne (Hydraulika + Glikol)", "Fotowoltaika PV / Magazyn Energii (Pomiary DC/AC)"],
-                        horizontal=True
-                    )
-
+                    insp_type = st.radio("Typ instalacji:", ["Pompa Ciepła / Solar (Hydraulika + Glikol)", "Fotowoltaika PV / Magazyn (DC/AC)"], horizontal=True)
                     if insp_type.startswith("Pompa"):
                         p_c1, p_c2 = st.columns(2)
                         with p_c1:
-                            cisnienie_co = st.number_input("Ciśnienie statyczne układu [bar] (Norma: 1.2 - 2.2 bar):", min_value=0.0, max_value=6.0, step=0.1, value=1.5)
-                            delta_t = st.number_input("Delta temperatur Zasilanie-Powrot [st.C] (Norma: 4.0 - 8.0 st.C):", min_value=0.0, max_value=30.0, step=0.5, value=5.5)
-                            filtr_czystosc = st.selectbox("Stan filtra siatkowego i separatora magnetycznego:", ["Czysty / Wyczyszczono", "Silnie zanieczyszczony szlamem (Wyczyszczono)"])
+                            cisnienie_co = st.number_input("Ciśnienie statyczne [bar] (Norma: 1.2-2.2):", 0.0, 6.0, 1.5, 0.1)
+                            delta_t = st.number_input("Delta T Zasilanie-Powrót [st.C] (Norma: 4-8):", 0.0, 30.0, 5.5, 0.5)
+                            filtr_czystosc = st.selectbox("Filtr siatkowy i magnetyczny:", ["Wyczyszczono", "Silny szlam - wyczyszczono"])
                         with p_c2:
-                            glikol_temp = st.number_input("Temperatura krzepnięcia glikolu z refraktometru [st.C] (Norma: -15 do -28 st.C):", min_value=-50.0, max_value=0.0, step=1.0, value=-20.0)
-                            glikol_ph = st.number_input("Odczyn pH zładu / glikolu z paska pH (Norma: 7.5 - 9.0 pH):", min_value=3.0, max_value=12.0, step=0.2, value=8.0)
-                            szczelnosc_fgaz = st.selectbox("Kontrola szczelności układu i naczynia przeponowego:", ["Szczelny / Ciśnienie OK", "Wykryto usterkę / Dopompowano naczynie"])
-
-                        if cisnienie_co < 1.0:
-                            st.error("🚨 ALERT: Zbyt niskie ciśnienie (< 1.0 bar)! Ryzyko błędu przepływu E03 i kawitacji pompy. PROCEDURA: Sprawdź szczelność, zweryfikuj naczynie przeponowe i dopuść zładu do 1.5 bar.")
-                        elif cisnienie_co > 2.5:
-                            st.error("🚨 ALERT: Zbyt wysokie ciśnienie (> 2.5 bar)! Ryzyko otwarcia zaworu bezpieczeństwa 3 bar. PROCEDURA: Uszkodzona przepona naczynia wzbiorczego lub brak poduszki powietrznej. Upuść ciśnienie do 1.5 bar.")
-
-                        if delta_t > 9.0:
-                            st.error("🚨 ALERT: Zbyt wysoka Delta T (> 9 st.C) – zdławiony przepływ przez wymiennik! PROCEDURA: Wyczyść filtr siatkowy i magnetyczny, odkręć rotametry i zwiększ bieg pompy obiegowej.")
-
+                            glikol_temp = st.number_input("Temp. krzepnięcia glikolu [st.C] (Norma: -15 do -28):", -50.0, 0.0, -20.0, 1.0)
+                            glikol_ph = st.number_input("Odczyn pH zładu (Norma: 7.5-9.0):", 3.0, 12.0, 8.0, 0.2)
                         if glikol_temp > -15.0:
-                            st.error(f"🚨 ALERT GLIKOL ({glikol_temp} st.C): Zbyt słabe stężenie glikolu! Ryzyko zamarznięcia i rozerwania wymiennika. PROCEDURA: Nie dolewaj wody! Wtłocz koncentrat glikolu propylenowego i wymieszaj obieg do uzyskania min. -18 st.C.")
-                        elif glikol_temp < -32.0:
-                            st.warning(f"⚠️ OSTRZEŻENIE GLIKOL ({glikol_temp} st.C): Zbyt gęsty glikol! Duży opór dla pompy obiegowej (błąd E03). Rozcieńcz lekko wodą demineralizowaną do ok. -22 st.C.")
-
+                            st.error("🚨 Za słaby glikol (> -15 st.C)! Ryzyko zamarznięcia wymiennika.")
                         if glikol_ph < 7.0:
-                            st.error(f"🚨 ALERT pH ({glikol_ph}): Zakwaszenie glikolu (pH < 7.0)! Płyn trawi uszczelki i miedź w wymienniku. PROCEDURA: Konieczna całkowita wymiana glikolu na nowy z inhibitorem korozji i płukanie układu.")
-                        elif glikol_ph > 9.5:
-                            st.warning(f"⚠️ OSTRZEŻENIE pH ({glikol_ph}): Zbyt wysokie pH (> 9.5) – ryzyko korozji aluminium/mosiądzu.")
-
-                        przeglad_summary_lines.append(
-                            f"PRZEGLĄD PC/SOLAR: Ciśnienie={cisnienie_co} bar | DeltaT={delta_t} C | Glikol={glikol_temp} C | pH={glikol_ph} | Filtr={filtr_czystosc} | Układ={szczelnosc_fgaz}"
-                        )
+                            st.error("🚨 Zakwaszony glikol (pH < 7.0)! Konieczna wymiana zładu.")
+                        przeglad_summary_lines.append(f"PC/SOLAR: Ciśnienie={cisnienie_co}bar, DeltaT={delta_t}C, Glikol={glikol_temp}C, pH={glikol_ph}, Filtr={filtr_czystosc}")
                     else:
                         pv_c1, pv_c2 = st.columns(2)
                         with pv_c1:
-                            riso_val = st.number_input("Rezystancja izolacji Riso [MOhm] (Norma: >= 1.0 MOhm):", min_value=0.0, max_value=500.0, step=0.5, value=50.0)
-                            u_max_ac = st.number_input("Maksymalne napięcie fazy AC [V] (Norma: 207 - 253 V):", min_value=180.0, max_value=280.0, step=1.0, value=238.0)
+                            riso_val = st.number_input("Rezystancja izolacji Riso [MOhm] (Norma >= 1.0):", 0.0, 500.0, 50.0, 0.5)
+                            u_max_ac = st.number_input("Napięcie AC [V] (Norma 207-253V):", 180.0, 280.0, 238.0, 1.0)
                         with pv_c2:
-                            uziemienie_val = st.number_input("Rezystancja uziemienia [Ohm] (Norma: <= 10 Ohm):", min_value=0.1, max_value=100.0, step=0.5, value=4.5)
-                            styki_stan = st.selectbox("Kontrola zacisków AC/DC i ochronników SPD:", ["Dokręcone / Sprawne", "Wykryto luźne styki / Przegrzanie (Dokręcono/Wymieniono)"])
-
-                        if riso_val < 1.0:
-                            st.error("🚨 ALERT Riso (< 1.0 MOhm): Uszkodzona izolacja DC! PROCEDURA: Rozepnij stringi, sprawdź wkładki SPD DC w rozdzielnicy oraz złącza MC4 na dachu.")
-                        if u_max_ac >= 251.0:
-                            st.warning("⚠️ OSTRZEŻENIE AC (>= 251V): Napięcie bliskie progu wyłączenia falownika (253V). PROCEDURA: Dokręć zaciski N i L w rozdzielnicy oraz włącz tryb mocy biernej Q(U) w falowniku.")
-                        if uziemienie_val > 10.0:
-                            st.error("🚨 ALERT UZIEMIENIE (> 10 Ohm): Zbyt wysoka rezystancja uziemienia! Ryzyko błędu F08 i braku ochrony przepięciowej. PROCEDURA: Sprawdź złącze kontrolne i rozbuduj uziom szpilkowy.")
-
-                        przeglad_summary_lines.append(
-                            f"PRZEGLĄD PV: Riso={riso_val} MOhm | Max AC={u_max_ac} V | Uziemienie={uziemienie_val} Ohm | Styki={styki_stan}"
-                        )
+                            uziemienie_val = st.number_input("Uziemienie [Ohm] (Norma <= 10):", 0.1, 100.0, 4.5, 0.5)
+                        przeglad_summary_lines.append(f"PV: Riso={riso_val}MOhm, Vac={u_max_ac}V, Uziemienie={uziemienie_val}Ohm")
 
             st.divider()
 
-            st.subheader("📸 Obowiązkowa dokumentacja zdjęciowa z instalacji")
-            st.info("Wgraj zdjęcia z telefonu/tabletu: **1) Tabliczka znamionowa urządzenia**, **2) Widok instalacji / usterki przed i po naprawie**.")
-            uploaded_photos = st.file_uploader(
-                "Dodaj zdjęcia z galerii lub aparatu (minimum 1 zdjęcie wymagane):",
-                type=["png", "jpg", "jpeg"],
-                accept_multiple_files=True,
-                key=f"photos_{selected_id}"
-            )
-            if uploaded_photos:
-                st.success(f"Załączono zdjęć: {len(uploaded_photos)}")
-
-            confirm_photos = st.checkbox(
-                "✅ Oświadczam i potwierdzam, że dodałem wszystkie wymagane zdjęcia z instalacji (w tym czytelne zdjęcie tabliczki znamionowej urządzenia).",
-                key=f"conf_photo_{selected_id}"
-            )
+            # 2. ZUŻYCIE MATERIAŁÓW Z BUSA (AUTOMATYCZNE ZEJŚCIE ZE STANU I DOLICZENIE DO RACHUNKU)
+            st.subheader("🚐 Materiały zużyte z Twojego samochodu")
+            st.caption("Wpisz w kolumnie **Zużyto_szt** ile sztuk materiału zużyłeś u klienta. Po zamknięciu zlecenia stan na busie automatycznie się zmniejszy, a cena doliczy do rachunku.")
+            van_materials = my_prof.get("materialy", [])
+            mat_df = pd.DataFrame(van_materials)
+            if not mat_df.empty:
+                mat_df["Zużyto_szt"] = 0
+                edited_mat_df = st.data_editor(
+                    mat_df[["nazwa", "ilosc", "cena_klienta", "koszt_zakupu", "Zużyto_szt"]],
+                    column_config={
+                        "nazwa": st.column_config.TextColumn("Materiał na aucie", disabled=True),
+                        "ilosc": st.column_config.NumberColumn("Stan w busie (szt.)", disabled=True),
+                        "cena_klienta": st.column_config.NumberColumn("Cena dla klienta (zł)", disabled=True),
+                        "koszt_zakupu": st.column_config.NumberColumn("Koszt zakupu (zł)", disabled=True),
+                        "Zużyto_szt": st.column_config.NumberColumn("Zużyto u klienta (szt.)", min_value=0, max_value=20, step=1)
+                    },
+                    use_container_width=True,
+                    hide_index=True,
+                    key=f"van_mat_use_{selected_id}"
+                )
+                used_materials_price = float((edited_mat_df["Zużyto_szt"] * edited_mat_df["cena_klienta"]).sum())
+                used_materials_cost = float((edited_mat_df["Zużyto_szt"] * edited_mat_df["koszt_zakupu"]).sum())
+                used_items_desc = [
+                    f"{r['nazwa']} x{int(r['Zużyto_szt'])}"
+                    for _, r in edited_mat_df.iterrows() if int(r["Zużyto_szt"]) > 0
+                ]
+            else:
+                used_materials_price = 0.0
+                used_materials_cost = 0.0
+                used_items_desc = []
 
             st.divider()
 
-            st.subheader("🧾 Rozliczenie wizyty i wykonanych prac")
-            calc_c1, calc_c2 = st.columns(2)
-            with calc_c1:
-                selected_services = st.multiselect(
-                    "Wykonane czynności z cennika:",
-                    options=list(CENNIK_BAZOWY.keys()),
-                    default=[]
+            # 3. OBOWIĄZKOWE ZDJĘCIA
+            st.subheader("📸 Obowiązkowa dokumentacja zdjęciowa (Tabliczka + Instalacja)")
+            uploaded_photos = st.file_uploader("Załącz zdjęcia (min. 1 zdjęcie wymagane):", type=["png", "jpg", "jpeg"], accept_multiple_files=True, key=f"ph_{selected_id}")
+            confirm_photos = st.checkbox("✅ Potwierdzam wykonanie i załączenie zdjęcia tabliczki znamionowej oraz instalacji.", key=f"cph_{selected_id}")
+
+            st.divider()
+
+            # 4. ROZLICZENIE, GOTÓWKA, CZĘŚCI DO ZAMÓWIENIA I LEAD HANDLOWY
+            st.subheader("🧾 Rozliczenie wizyty, Gotówka i Przekazanie dalej")
+            r_c1, r_c2 = st.columns(2)
+            with r_c1:
+                selected_services = st.multiselect("Wykonane usługi z cennika:", options=list(CENNIK_BAZOWY.keys()))
+                extra_parts_manual = st.number_input("Inne części spoza magazynu busa (zł):", min_value=0.0, step=50.0, value=0.0)
+                forma_plat = st.selectbox("Forma płatności:", ["Gotówka pobrana", "Przelew (Faktura)", "BLIK / Terminal", "Gwarancja (0 zł)"])
+            with r_c2:
+                work_minutes = st.number_input("Czas pracy na miejscu (minuty):", min_value=15, step=15, value=90)
+                typ_serwisu_real = st.selectbox("Kwalifikacja:", ["Płatny", "Gwarancyjny"], index=0 if t_row["Typ_Serwisu"] != "Gwarancyjny" else 1)
+                wynik_wizyty = st.radio(
+                    "Status zakończenia prac:",
+                    [
+                        "✅ Naprawione podczas 1. wizyty (Zamknij zlecenie)",
+                        "📦 Wymagane zamówienie części (Przekaż do Koordynatora)"
+                    ]
                 )
-                extra_parts = st.number_input("Koszt użytych części / materiałów (zł):", min_value=0.0, step=50.0, value=0.0)
-                km_dojazd = st.number_input("Dojazd (km ponad ryczałt):", min_value=0, step=10, value=0)
 
-            with calc_c2:
-                work_minutes = st.number_input(
-                    "Czas pracy na miejscu (minuty):",
-                    min_value=15,
-                    step=15,
-                    value=int(float(t_row["Czas_Pracy_Min"])) if float(t_row["Czas_Pracy_Min"]) > 0 else 60
-                )
-                typ_serwisu_real = st.selectbox("Kwalifikacja zlecenia:", ["Płatny", "Gwarancyjny"], index=0 if t_row["Typ_Serwisu"] != "Gwarancyjny" else 1)
-                fixed_first_visit = st.radio(
-                    "Czy usterka została w pełni rozwiązana podczas tej wizyty?",
-                    ["Tak", "Nie (Wymagana kolejna wizyta / zamówienie części)"],
-                    horizontal=True
-                )
+            potrzebne_czesci_txt = ""
+            if wynik_wizyty.startswith("📦"):
+                potrzebne_czesci_txt = st.text_input("🛠️ Wpisz dokładnie jaką część trzeba zamówić (model, S/N z tabliczki):", value=str(t_row.get("Potrzebne_Czesci", "")))
 
-            base_sum = sum(CENNIK_BAZOWY[s] for s in selected_services)
-            if base_sum == 0 and typ_serwisu_real == "Płatny":
-                base_sum = float(t_row["Kwota_Przewidywana"])
-            auto_total = 0.0 if typ_serwisu_real == "Gwarancyjny" else (base_sum + extra_parts + (km_dojazd * 2.5))
+            czy_lead = st.checkbox("🔥 Klient zainteresowany ofertą handlową / rozbudową (Przekaż Lead do Handlowca)")
+            lead_opis = ""
+            if czy_lead:
+                lead_opis = st.text_input("Czego dotyczy oferta dla klienta? (np. Magazyn energii 10kWh, nowa Pompa Ciepła):", value=str(t_row.get("Lead_Handlowy", "")))
 
-            final_price = st.number_input("💰 Kwota końcowa do rozliczenia (zł brutto):", min_value=0.0, step=50.0, value=float(auto_total))
-            internal_note = st.text_area("Notatka wewnętrzna dla Koordynatora (niewidoczna dla klienta):", value=str(t_row["Notatka_Serwisanta"]))
+            services_sum = sum(CENNIK_BAZOWY[s] for s in selected_services)
+            if services_sum == 0 and typ_serwisu_real == "Płatny" and used_materials_price == 0:
+                services_sum = float(t_row["Kwota_Przewidywana"])
+            auto_total = 0.0 if (typ_serwisu_real == "Gwarancyjny" or forma_plat == "Gwarancja (0 zł)") else (services_sum + used_materials_price + extra_parts_manual)
 
+            final_price = st.number_input("💰 Kwota końcowa do zapłaty przez klienta (zł brutto):", min_value=0.0, step=50.0, value=float(auto_total))
+            internal_note = st.text_area("Notatka wewnętrzna dla Koordynatora:", value=str(t_row["Notatka_Serwisanta"]))
+
+            # Protokół dla klienta + Podpis
             st.markdown('<div class="client-box">', unsafe_allow_html=True)
-            render_brand_logo(max_width=220, centered=False)
-            st.markdown("### 📄 Protokół Odbioru Serwisu i Zalecenia dla Klienta")
-            st.markdown(f"**Klient:** {t_row['Klient']} | **Adres:** {t_row['Kod_Pocztowy']} {t_row['Miasto']}, {t_row['Adres']} | **Data:** {datetime.date.today()}")
-            if przeglad_summary_lines:
-                st.markdown(f"**Wyniki pomiarów przeglądu:** `{przeglad_summary_lines[0]}`")
-
-            client_recommendations = st.text_area(
-                "Zalecenia po-serwisowe dla Klienta (widoczne na protokole):",
-                value=str(t_row["Zalecenia_Klienta"]),
-                placeholder="Wpisz zalecenia dotyczące eksploatacji instalacji, ciśnienia w układzie lub terminu kolejnego przeglądu..."
-            )
-            st.markdown(f"#### Do zapłaty / Rozliczenie: **{final_price:,.2f} zł** ({typ_serwisu_real})")
-            st.markdown("**Podpis Klienta (potwierdzenie wykonania prac i zapoznania się z zaleceniami):**")
-
+            render_brand_logo(max_width=200, centered=False)
+            st.markdown("### 📄 Protokół Odbioru Serwisu")
+            st.markdown(f"**Klient:** {t_row['Klient']} | **Adres:** {t_row['Kod_Pocztowy']} {t_row['Miasto']}, {t_row['Adres']}")
+            if used_items_desc:
+                st.markdown(f"**Zużyte materiały:** {', '.join(used_items_desc)}")
+            client_recommendations = st.text_area("Zalecenia po-serwisowe dla Klienta:", value=str(t_row["Zalecenia_Klienta"]))
+            st.markdown(f"#### Kwota rozliczenia: **{final_price:,.2f} zł** ({forma_plat})")
             canvas_result = st_canvas(
-                fill_color="rgba(255, 255, 255, 0)",
-                stroke_width=3,
-                stroke_color="#0f172a",
-                background_color="#ffffff",
-                height=180,
-                width=620,
-                drawing_mode="freedraw",
-                key=f"canvas_{selected_id}"
+                fill_color="rgba(255, 255, 255, 0)", stroke_width=3, stroke_color="#0f172a",
+                background_color="#ffffff", height=160, width=600, drawing_mode="freedraw", key=f"canv_{selected_id}"
             )
             st.markdown('</div>', unsafe_allow_html=True)
 
-            if st.button("✅ ZAKOŃCZ ZLECENIE I WRÓĆ DO TRASY Z TEGO DNIA", type="primary"):
+            if st.button("✅ ZATWIERDŹ WIZYTĘ I ZAKTUALIZUJ MAGAZYN BUSA", type="primary"):
                 if not confirm_photos or not uploaded_photos:
-                    st.error("🚨 BLOKADA ZAMKNIĘCIA: Musisz załączyć zdjęcie tabliczki znamionowej / instalacji oraz zaznaczyć pole potwierdzenia wykonania wszystkich wymaganych zdjęć!")
+                    st.error("🚨 BLOKADA: Załącz zdjęcie tabliczki znamionowej / instalacji i zaznacz potwierdzenie zdjęć!")
+                elif wynik_wizyty.startswith("📦") and not potrzebne_czesci_txt.strip():
+                    st.error("🚨 Wpisz dokładnie, jaką część należy zamówić!")
                 else:
-                    df.loc[t_idx, "Status"] = "Zakończone"
+                    # Odejmowanie zużytych materiałów ze stanu na aucie
+                    if not mat_df.empty:
+                        for i_m, r_m in edited_mat_df.iterrows():
+                            used_q = int(r_m["Zużyto_szt"])
+                            if used_q > 0:
+                                my_prof["materialy"][i_m]["ilosc"] = max(0, int(my_prof["materialy"][i_m]["ilosc"]) - used_q)
+                        save_config_and_profiles(profiles)
+
+                    if wynik_wizyty.startswith("📦"):
+                        df.loc[t_idx, "Status"] = "Do zamówienia części"
+                        df.loc[t_idx, "Naprawione_1_Wizyta"] = "Nie"
+                        df.loc[t_idx, "Potrzebne_Czesci"] = potrzebne_czesci_txt.strip()
+                    else:
+                        df.loc[t_idx, "Status"] = "Zakończone"
+                        df.loc[t_idx, "Naprawione_1_Wizyta"] = "Tak"
+
                     df.loc[t_idx, "Typ_Serwisu"] = typ_serwisu_real
-                    df.loc[t_idx, "Naprawione_1_Wizyta"] = "Tak" if fixed_first_visit.startswith("Tak") else "Nie"
+                    df.loc[t_idx, "Forma_Platnosci"] = forma_plat
+                    df.loc[t_idx, "Gotowka_Rozliczona"] = "Nie" if (forma_plat == "Gotówka pobrana" and final_price > 0) else "Tak"
                     df.loc[t_idx, "Kwota_Koncowa"] = float(final_price)
+                    df.loc[t_idx, "Koszt_Materialow"] = float(used_materials_cost)
                     df.loc[t_idx, "Czas_Pracy_Min"] = float(work_minutes)
-                    df.loc[t_idx, "Wyniki_Przegladu"] = "; ".join(przeglad_summary_lines)
+                    df.loc[t_idx, "Wyniki_Przegladu"] = "; ".join(przeglad_summary_lines + used_items_desc)
                     df.loc[t_idx, "Zdjecia_Potwierdzone"] = f"Tak ({len(uploaded_photos)} zdj.)"
                     df.loc[t_idx, "Zalecenia_Klienta"] = str(client_recommendations)
                     df.loc[t_idx, "Notatka_Serwisanta"] = str(internal_note)
+                    df.loc[t_idx, "Lead_Handlowy"] = str(lead_opis).strip() if czy_lead else str(t_row.get("Lead_Handlowy", ""))
                     df.loc[t_idx, "Data_Zamkniecia"] = str(datetime.date.today())
+                    df.loc[t_idx, "Podpis_Zlozony"] = "Tak"
 
-                    podpisane = "Nie"
-                    try:
-                        if canvas_result is not None and getattr(canvas_result, "image_data", None) is not None:
-                            podpisane = "Tak"
-                    except Exception:
-                        podpisane = "Nie"
-
-                    df.loc[t_idx, "Podpis_Zlozony"] = podpisane
                     save_tickets(df)
                     st.session_state["active_ticket_id"] = None
-                    st.success("Zlecenie zamknięte! Wracasz do pozostałych klientów z dzisiejszej trasy.")
+                    st.success("Zapisano wizytę i zaktualizowano stan magazynowy na samochodzie!")
                     st.rerun()
 
 # ==========================================
-# 7. PANEL KOORDYNATORA (PLANER Z PROMIENIEM GPS I WYBOREM RĘCZNYM)
+# 7. PANEL KOORDYNATORA
 # ==========================================
 elif st.session_state["logged_role"] == "koordynator":
     df = st.session_state["df_tickets"]
     profiles = st.session_state["profiles"]
+    email_cfg = st.session_state["email_cfg"]
 
-    tab_plan, tab_kadry, tab_zlecenia, tab_brand = st.tabs([
-        "🗺️ Harmonogram i Planowanie Tras",
-        "👷 Profilowanie Serwisantów (Kadry i Wyniki)",
-        "📋 Baza Zgłoszeń i Edycja",
-        "🎨 Branding (Logo) i Plik Excel"
+    # 1. AUTOMATYCZNY WATCHDOG 3-DNIOWY (PRZYPOMNIENIA EMAIL)
+    overdue_delegated, sent_cnt = check_and_send_3day_reminders(df, email_cfg)
+    if sent_cnt > 0:
+        st.toast(f"📧 Wysłano automatyczne przypomnienia e-mail dla {sent_cnt} przeterminowanych zleceń (>3 dni)!", icon="📧")
+    if overdue_delegated:
+        st.error(f"🚨 **ALARM ODDELEGOWANIA (>3 DNI BEZ OFERTY/TERMINU):** Zgłoszenia `{', '.join(overdue_delegated)}` nie mają potwierdzonej oferty lub terminu od działu!")
+
+    # 2. ALERTY NISKICH STANÓW MAGAZYNOWYCH NA BUSACH SERWISANTÓW
+    for t_n, t_p in profiles.items():
+        low_s = get_low_stock_items(t_p)
+        if low_s:
+            st.warning(f"🚐 **Braki na aucie serwisanta {t_n} (<=1 szt.):** {', '.join(low_s)}")
+
+    # 3. SYSTEM 15:30 - LISTA KLIENTÓW DO ODDZWONIENIA (WISI DO SKUTKU!)
+    now_time = datetime.datetime.now().time()
+    today_iso = str(datetime.date.today())
+    callbacks_df = df[df["Do_Oddzwonienia"] == "Tak"].copy()
+
+    is_after_1530 = (now_time >= datetime.time(15, 30))
+    if not callbacks_df.empty:
+        header_cb = "🔔 KLIENCI DO ODDZWONIENIA (PO 15:30 - OBOWIĄZKOWA LISTA DO SKUTKU!)" if is_after_1530 else f"📞 Klienci oznaczeni do oddzwonienia ({len(callbacks_df)} poz. - główny blok po 15:30)"
+        with st.expander(header_cb, expanded=(is_after_1530 or len(callbacks_df) > 0)):
+            for cb_idx, cb_row in callbacks_df.iterrows():
+                cb_id = cb_row["ID_Zgloszenia"]
+                cb_phones = extract_phone_numbers(str(cb_row["Telefon"]), str(cb_row["Klient"]))
+                cb_phone_main = cb_phones[0] if cb_phones else ""
+                ost_wpis = cb_row["Notatka_Serwisanta"] or cb_row["Opis_Zgloszenia"]
+
+                with st.container(border=True):
+                    c_cb1, c_cb2, c_cb3 = st.columns([1.6, 1.2, 1.2])
+                    with c_cb1:
+                        st.markdown(f"🔴 **{cb_row['Klient']}** (`{cb_id}`) – 📅 Termin kontaktu: **{cb_row['Data_Oddzwonienia'] or today_iso}**")
+                        st.markdown(f"📍 `{cb_row['Kod_Pocztowy']} {cb_row['Miasto']}, {cb_row['Adres']}` | 🔧 {cb_row['Typ_Instalacji']}")
+                        st.markdown(f"💬 **Ostatni wpis:** *{ost_wpis}*")
+                    with c_cb2:
+                        if cb_phone_main:
+                            st.link_button(f"📞 Zadzwoń teraz: {cb_phone_main}", f"tel:{cb_phone_main}")
+                            sms_missed = "Dzien dobry, kontaktowalismy sie z Dzialu Serwisu PROMAG OZE w sprawie zgloszenia serwisowego. Prosimy o kontakt zwrotny lub informacje, w jakich godzinach mozemy zadzwonic."
+                            st.link_button("📲 Wyślij SMS (Nie odbiera)", f"sms:{cb_phone_main}?body={sms_missed.replace(' ', '%20')}")
+                        nowa_notatka_cb = st.text_input("Notatka z rozmowy:", key=f"cb_note_{cb_id}", placeholder="Ustalenia z klientem...")
+                    with c_cb3:
+                        if st.button("✅ Załatwione (Zdejmij alert)", key=f"cb_done_{cb_id}", type="primary"):
+                            df.loc[cb_idx, "Do_Oddzwonienia"] = "Nie"
+                            df.loc[cb_idx, "Potwierdzony_Tel"] = "Tak"
+                            if nowa_notatka_cb.strip():
+                                df.loc[cb_idx, "Notatka_Serwisanta"] = f"[{today_iso} Tel OK]: {nowa_notatka_cb.strip()} | " + str(df.loc[cb_idx, "Notatka_Serwisanta"])
+                            save_tickets(df)
+                            st.rerun()
+                        if st.button("⏳ Nie odbiera (Zostaw do skutku)", key=f"cb_wait_{cb_id}"):
+                            stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+                            df.loc[cb_idx, "Notatka_Serwisanta"] = f"[Próba kontaktu {stamp} - nie odbiera] " + str(df.loc[cb_idx, "Notatka_Serwisanta"])
+                            save_tickets(df)
+                            st.rerun()
+
+    # ZAKŁADKI KOORDYNATORA - START OD ZAKŁADKI Z KLIENTAMI!
+    tab_klienci, tab_plan, tab_oddeleguj, tab_kadry, tab_ustawienia = st.tabs([
+        "📋 1. Klienci i Zgłoszenia (Start + Kalkulator)",
+        "🗺️ 2. Planer Korytarzowy i Czysty Zysk (1200 zł)",
+        "📤 3. Oddelegowania, Części i Leady",
+        "👷 4. Kadry, Narzędzia, Magazyn Busa i Gotówka",
+        "⚙️ 5. Ustawienia E-mail (SMTP), Logo i Excel"
     ])
 
-    with tab_plan:
-        st.subheader("🗺️ Planowanie Tras (Wyszukiwanie w promieniu GPS + Wybór ręczny)")
-        st.markdown("Wpisz kod pocztowy bazy/serwisanta oraz ustaw promień (km). System wyliczy odległość geograficzną zgłoszeń. Możesz zaznaczyć dowolne zgłoszenie 'z palca' (np. pilną awarię spoza algorytmu) i przypisać je serwisantowi.")
+    # ----------------------------------------------------
+    # ZAKŁADKA 1: KLIENCI, KALKULATOR WYCENY, DODAWANIE Z HISTORIĄ ADRESU
+    # ----------------------------------------------------
+    with tab_klienci:
+        col_new_t, col_calc_t = st.columns([1.3, 1])
 
-        p_col1, p_col2, p_col3, p_col4 = st.columns([1.2, 1, 1, 1])
-        with p_col1:
-            sel_tech_plan = st.selectbox("Wybierz serwisanta:", list(profiles.keys()), key="plan_tech_sel")
-        with p_col2:
-            base_postal = st.text_input("Kod bazowy (np. 05-800):", value="05-800")
-        with p_col3:
-            radius_km = st.slider("Maks. promień (km):", min_value=10, max_value=200, value=50, step=10)
-        with p_col4:
-            plan_date = st.date_input("Data planu:", value=datetime.date.today() + datetime.timedelta(days=1))
+        with col_calc_t:
+            with st.container(border=True):
+                st.subheader("🧮 Kalkulator Szybkiej Wyceny (Na telefon)")
+                st.caption("Zaznacz usługi i materiały podczas rozmowy z klientem, aby od razu podać mu widełki cenowe i wpisać kwotę zgody.")
+                calc_srv = st.multiselect("Usługi z cennika:", list(CENNIK_BAZOWY.keys()), key="coord_calc_srv")
+                calc_mat = st.multiselect("Materiały z katalogu:", [f"{m['nazwa']} ({m['cena_klienta']} zł)" for m in DOMYSLNE_MATERIALY], key="coord_calc_mat")
+                calc_extra_km = st.number_input("Dojazd ponad ryczałt [km]:", 0, 500, 0, 10, key="coord_calc_km")
 
-        # Obliczanie odległości GPS od wpisanego kodu pocztowego
-        base_lat, base_lon = get_coords_for_postal(base_postal)
-        
-        pending_df = df[df["Status"].isin(["Nowe", "Do zaplanowania", ""])].copy()
-        
-        if not pending_df.empty:
-            distances = []
-            for _, r in pending_df.iterrows():
-                r_lat, r_lon = extract_coords_from_row(r)
-                dist = haversine_km(base_lat, base_lon, r_lat, r_lon)
-                distances.append(round(dist, 1))
-            pending_df["Odleglosc_km"] = distances
+                sum_srv_c = sum(CENNIK_BAZOWY[s] for s in calc_srv)
+                sum_mat_c = 0.0
+                for cm in calc_mat:
+                    for dm in DOMYSLNE_MATERIALY:
+                        if cm.startswith(dm["nazwa"]):
+                            sum_mat_c += dm["cena_klienta"]
+                total_quote_calc = sum_srv_c + sum_mat_c + (calc_extra_km * 2.5)
+                st.markdown(f"### 💰 Wyliczona kwota dla klienta: **{total_quote_calc:,.0f} zł brutto**")
 
-            # Filtrowanie po promieniu
-            radius_df = pending_df[pending_df["Odleglosc_km"] <= radius_km].sort_values(by="Odleglosc_km").copy()
-            
-            st.markdown(f"#### 📍 Zgłoszenia w promieniu do **{radius_km} km** od kodu `{base_postal}` ({len(radius_df)} poz.):")
-            st.caption("Zaznacz zlecenia, które chcesz przypisać. Widzisz tu całą okolicę, więc możesz dołożyć dowolny krytyczny temat pomimo odległości.")
+        with col_new_t:
+            with st.container(border=True):
+                st.subheader("➕ Wprowadź nowe zgłoszenie klienta")
+                q_check_tel = st.text_input("🔍 Wpisz telefon lub fragment adresu (sprawdzam historię wizyt i czarną listę):", placeholder="np. 500100200 lub Słoneczna")
+                if len(q_check_tel.strip()) >= 4:
+                    q_clean = q_check_tel.strip()
+                    hist_matches = df[
+                        df["Telefon"].astype(str).str.contains(q_clean, case=False, na=False) |
+                        df["Adres"].astype(str).str.contains(q_clean, case=False, na=False) |
+                        df["Klient"].astype(str).str.contains(q_clean, case=False, na=False)
+                    ]
+                    if not hist_matches.empty:
+                        st.warning(f"⚠️ **HISTORIA ADRESU / KLIENTA:** Znaleziono {len(hist_matches)} wcześniejszych zgłoszeń w bazie!")
+                        for _, hr in hist_matches.tail(3).iterrows():
+                            trudny_b = " 🚩 [TRUDNY KLIENT]" if hr.get("Trudny_Klient") == "Tak" else ""
+                            st.caption(f"• `{hr['ID_Zgloszenia']}` | Data: {hr['Data_Planowana'] or hr['Data_Zamkniecia']} | Serwisant: **{hr['Serwisant']}** | Kwota: {hr['Kwota_Koncowa'] or hr['Kwota_Przewidywana']} zł | Opis: *{hr['Opis_Zgloszenia']}*{trudny_b}")
 
-            if not radius_df.empty:
-                display_plan_df = radius_df[["ID_Zgloszenia", "Odleglosc_km", "Klient", "Kod_Pocztowy", "Miasto", "Adres", "Typ_Instalacji", "Priorytet_Krytyczny", "Kwota_Przewidywana", "Opis_Zgloszenia"]].copy()
-                display_plan_df.insert(0, "Wybierz", False)
-                
-                edited_plan_df = st.data_editor(
-                    display_plan_df,
-                    use_container_width=True,
-                    hide_index=True,
-                    key="editor_gps_routes"
-                )
+                with st.form("form_add_ticket_coord"):
+                    fa1, fa2 = st.columns(2)
+                    with fa1:
+                        n_klient = st.text_input("Imię i nazwisko klienta:")
+                        n_tel = st.text_input("Telefon (można 2 po /):", value=q_check_tel if re.search(r'\d{6}', q_check_tel) else "")
+                        n_kod = st.text_input("Kod pocztowy (XX-XXX):", placeholder="05-800")
+                        n_miasto = st.text_input("Miejscowość:")
+                        n_adres = st.text_input("Ulica i nr:")
+                    with fa2:
+                        n_typ_inst = st.selectbox("Urządzenie:", [
+                            "Pompa Ciepła ARGOM", "Falownik Deye (PV / Hybryda)", "Falownik GoodWe (PV / Hybryda)",
+                            "Kolektory Słoneczne (Solar)", "Pompa Ciepła + PV", "Magazyn Energii", "Inne"
+                        ])
+                        n_przeglad = st.selectbox("Wymagany pełny przegląd z protokołem?", ["Nie", "Tak"])
+                        n_kryt = st.selectbox("Priorytet krytyczny (Awaria)?", ["Nie", "Tak"])
+                        n_trudny = st.selectbox("🚩 Trudny klient / Wymagana przedpłata?", ["Nie", "Tak"])
+                        n_typ_serw = st.selectbox("Rodzaj serwisu:", ["Płatny", "Gwarancyjny"])
 
-                selected_ids = edited_plan_df[edited_plan_df["Wybierz"] == True]["ID_Zgloszenia"].tolist()
+                    fb1, fb2, fb3, fb4 = st.columns(4)
+                    with fb1:
+                        n_kwota = st.number_input("Szacowana kwota (zł):", 0.0, 50000.0, float(total_quote_calc) if total_quote_calc > 0 else 650.0, 50.0)
+                    with fb2:
+                        n_zgoda = st.number_input("✅ Zgoda klienta do kwoty (zł):", 0.0, 50000.0, float(total_quote_calc) if total_quote_calc > 0 else 0.0, 50.0)
+                    with fb3:
+                        n_oddzwonic = st.checkbox("📞 Oddzwonić do klienta?", value=False)
+                    with fb4:
+                        n_data_oddzw = st.date_input("Data oddzwonienia:", value=datetime.date.today())
 
-                col_btn_auto, col_btn_man = st.columns(2)
-                with col_btn_auto:
-                    if st.button("🤖 Uruchom Auto-Planer klastrów", type="secondary"):
-                        proposals, msg = generate_smart_routes(df, profiles, plan_date, days_ahead=3, target_tech=sel_tech_plan)
-                        st.session_state["route_proposals"] = proposals
-                        st.session_state["route_msg"] = msg
-                        st.rerun()
+                    n_opis = st.text_area("Opis usterki / ustalenia:")
 
-                with col_btn_man:
-                    if st.button(f"✅ PRZYPISZ ZAZNACZONE ({len(selected_ids)}) DLA: {sel_tech_plan}", type="primary"):
-                        if not selected_ids:
-                            st.error("Nie zaznaczono żadnego zlecenia!")
-                        else:
-                            for tid in selected_ids:
-                                idx_match = df[df["ID_Zgloszenia"] == tid].index[0]
-                                df.loc[idx_match, "Serwisant"] = sel_tech_plan
-                                df.loc[idx_match, "Data_Planowana"] = str(plan_date)
-                                df.loc[idx_match, "Status"] = "Zaplanowane"
-                            save_tickets(df)
-                            st.success(f"Przypisano {len(selected_ids)} zleceń do serwisanta {sel_tech_plan} na dzień {plan_date}!")
-                            st.rerun()
-            else:
-                st.warning(f"Brak nowych zgłoszeń w promieniu {radius_km} km od kodu {base_postal}. Zwiększ promień w suwaku powyżej.")
-        else:
-            st.info("Brak nowych zgłoszeń oczekujących na zaplanowanie w całej bazie.")
-
-        if "route_msg" in st.session_state and st.session_state["route_msg"]:
-            st.info(st.session_state["route_msg"])
-
-        proposals = st.session_state.get("route_proposals", [])
-        if proposals:
-            st.markdown("### 🤖 Propozycje z Auto-Planera:")
-            for i, prop in enumerate(proposals):
-                with st.container(border=True):
-                    st.markdown(
-                        f"#### 📅 Dzień: `{prop['data']}` | 👷 Serwisant: **{prop['serwisant']}** | "
-                        f"📍 Punkty: **{prop['count']}/4** ({prop['miasta']}) | "
-                        f"💰 Przewidywany przychód: **{prop['total_rev']:,.0f} zł** | 🔥 Krytyczne: **{prop['crit_count']}**"
-                    )
-                    sub_df = df.loc[prop["indices"], ["ID_Zgloszenia", "Klient", "Kod_Pocztowy", "Miasto", "Adres", "Typ_Instalacji", "Opis_Zgloszenia", "Kwota_Przewidywana"]]
-                    st.dataframe(sub_df, use_container_width=True, hide_index=True)
-
-            if st.button("✅ ZATWIERDŹ WSZYSTKIE PROPOZYCJE AUTO-PLANERA", type="primary"):
-                for prop in proposals:
-                    for idx in prop["indices"]:
-                        df.loc[idx, "Serwisant"] = prop["serwisant"]
-                        df.loc[idx, "Data_Planowana"] = prop["data"]
-                        df.loc[idx, "Status"] = "Zaplanowane"
-                save_tickets(df)
-                st.session_state["route_proposals"] = []
-                st.success("Zatwierdzono trasy wygenerowane automatycznie!")
-                st.rerun()
-
-    with tab_kadry:
-        st.subheader("👷 Kartoteka Kadrowa, Uprawnienia i Wyniki Serwisantów")
-        selected_tech = st.selectbox("Wybierz serwisanta do edycji profilu:", list(profiles.keys()))
-        t_prof = profiles[selected_tech]
-        t_metrics = calculate_tech_metrics(df, selected_tech)
-
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Obsłużone zgłoszenia", t_metrics["total_closed"], f"Płatne: {t_metrics['paid_count']} | Gwar.: {t_metrics['warranty_count']}")
-        k2.metric("Naprawione przy 1. wizycie", f"{t_metrics['ftfr_pct']}%")
-        k3.metric("Obrót w tym miesiącu", f"{t_metrics['monthly_revenue']:,.0f} zł", t_metrics["active_rate_str"])
-        k4.metric("Brakuje do progów (3% / 4%)", f"I: {t_metrics['missing_tier_1']:,.0f} zł", f"II: {t_metrics['missing_tier_2']:,.0f} zł")
-
-        st.divider()
-
-        with st.form(f"form_profile_{selected_tech}"):
-            fc1, fc2, fc3 = st.columns(3)
-            with fc1:
-                new_full_name = st.text_input("Pełne imię, nazwisko i stanowisko:", value=t_prof.get("pelne_dane", ""))
-                new_phone = st.text_input("Telefon służbowy:", value=t_prof.get("telefon", ""))
-            with fc2:
-                new_pin = st.text_input("Stałe 4-cyfrowe hasło (PIN):", value=str(t_prof.get("pin", "")))
-                umowa_opts = ["Umowa o pracę", "B2B", "Umowa zlecenie", "Inna"]
-                curr_umowa = t_prof.get("umowa", "Umowa o pracę")
-                new_umowa = st.selectbox("Rodzaj umowy:", umowa_opts, index=umowa_opts.index(curr_umowa) if curr_umowa in umowa_opts else 0)
-            with fc3:
-                new_base_sal = st.number_input("Wynagrodzenie zasadnicze (zł):", min_value=0.0, step=100.0, value=float(t_prof.get("wynagrodzenie_bazowe", 6000.0)))
-
-            bh1, bh2 = st.columns(2)
-            with bh1:
-                new_bhp_date = st.text_input("Data szkolenia BHP (RRRR-MM-DD):", value=t_prof.get("bhp_data", ""))
-                new_bhp_prot = st.text_input("Numer i status protokołu BHP:", value=t_prof.get("bhp_protokol", ""))
-            with bh2:
-                new_med_date = st.text_input("Data badań medycyny pracy (RRRR-MM-DD):", value=t_prof.get("medycyna_data", ""))
-                new_med_scope = st.text_area("Zakres badań medycyny pracy:", value=t_prof.get("medycyna_zakres", ""))
-
-            new_secret_notes = st.text_area("Poufne notatki Koordynatora / Zarządu:", value=t_prof.get("notatki_poufne", ""))
-
-            if st.form_submit_button("💾 Zapisz kartotekę serwisanta", type="primary"):
-                profiles[selected_tech]["pelne_dane"] = new_full_name
-                profiles[selected_tech]["telefon"] = new_phone
-                profiles[selected_tech]["pin"] = new_pin
-                profiles[selected_tech]["umowa"] = new_umowa
-                profiles[selected_tech]["wynagrodzenie_bazowe"] = new_base_sal
-                profiles[selected_tech]["bhp_data"] = new_bhp_date
-                profiles[selected_tech]["bhp_protokol"] = new_bhp_prot
-                profiles[selected_tech]["medycyna_data"] = new_med_date
-                profiles[selected_tech]["medycyna_zakres"] = new_med_scope
-                profiles[selected_tech]["notatki_poufne"] = new_secret_notes
-                save_config_and_profiles(profiles)
-                st.success(f"Zapisano profil serwisanta {selected_tech}!")
-
-        st.markdown("#### 🏖️ Urlopy i Zwolnienia Lekarskie (L4)")
-        u_col1, u_col2, u_col3, u_col4 = st.columns(4)
-        with u_col1:
-            ab_type = st.selectbox("Typ nieobecności:", ["Urlop wypoczynkowy", "Zwolnienie lekarskie (L4)", "Szkolenie / Inne"])
-        with u_col2:
-            ab_from = st.date_input("Od dnia:", value=datetime.date.today(), key="ab_from")
-        with u_col3:
-            ab_to = st.date_input("Do dnia:", value=datetime.date.today() + datetime.timedelta(days=3), key="ab_to")
-        with u_col4:
-            st.write("")
-            if st.button("➕ Dodaj nieobecność"):
-                profiles[selected_tech].setdefault("urlopy_l4", []).append({"typ": ab_type, "od": str(ab_from), "do": str(ab_to)})
-                save_config_and_profiles(profiles)
-                st.rerun()
-
-        if t_prof.get("urlopy_l4"):
-            st.table(pd.DataFrame(t_prof["urlopy_l4"]))
-            if st.button("🗑️ Wyczyść historię urlopów/L4 tego serwisanta"):
-                profiles[selected_tech]["urlopy_l4"] = []
-                save_config_and_profiles(profiles)
-                st.rerun()
-
-    with tab_zlecenia:
-        col_add, col_edit = st.columns(2)
-        with col_add:
-            st.subheader("➕ Dodaj nowe zgłoszenie")
-            with st.expander("Rozwiń formularz nowego zgłoszenia", expanded=False):
-                with st.form("new_ticket_form"):
-                    n_klient = st.text_input("Imię i nazwisko / Firma klienta:")
-                    n_tel = st.text_input("Telefon (możesz wpisać dwa po ukośniku np. 500111222 / 600333444):")
-                    n_kod = st.text_input("Kod pocztowy (XX-XXX):", placeholder="np. 05-800")
-                    n_miasto = st.text_input("Miejscowość:")
-                    n_adres = st.text_input("Ulica i numer:")
-                    n_typ_inst = st.selectbox("Urządzenie / Typ instalacji:", [
-                        "Pompa Ciepła ARGOM", "Falownik Deye (PV / Hybryda)", "Falownik GoodWe (PV / Hybryda)",
-                        "Kolektory Słoneczne (Solar)", "Pompa Ciepła + PV", "Magazyn Energii", "Inne"
-                    ])
-                    n_przeglad = st.selectbox("Czy wykonać pełny przegląd urządzenia (Protokół Przeglądu)?", ["Nie", "Tak"])
-                    n_kryt = st.selectbox("Czy zgłoszenie krytyczne (Awaria)?", ["Nie", "Tak"])
-                    n_typ_serw = st.selectbox("Rodzaj serwisu:", ["Płatny", "Gwarancyjny"])
-                    n_kwota = st.number_input("Przewidywany przychód (zł):", min_value=0.0, step=50.0, value=650.0)
-                    n_tech = st.selectbox("Przypisz serwisanta (lub Auto-Planer):", ["Auto-Planer"] + list(profiles.keys()))
-                    n_data_plan = st.date_input("Data planowana (przy ręcznym przypisaniu):", value=datetime.date.today())
-                    n_opis = st.text_area("Opis usterki / zakres prac:")
-
-                    if st.form_submit_button("➕ Zapisz nowe zgłoszenie", type="primary"):
+                    if st.form_submit_button("➕ Zapisz zgłoszenie w bazie", type="primary"):
                         new_id = f"ZGL-{len(df) + 1001}"
                         new_row = {
                             "ID_Zgloszenia": new_id, "Klient": n_klient, "Adres": n_adres,
                             "Kod_Pocztowy": n_kod, "Miasto": n_miasto, "Telefon": n_tel,
                             "Typ_Instalacji": n_typ_inst, "Wymagany_Przeglad": n_przeglad,
                             "Opis_Zgloszenia": n_opis, "Priorytet_Krytyczny": n_kryt,
-                            "Typ_Serwisu": n_typ_serw,
-                            "Serwisant": "" if n_tech == "Auto-Planer" else n_tech,
-                            "Data_Planowana": "" if n_tech == "Auto-Planer" else str(n_data_plan),
-                            "Status": "Nowe" if n_tech == "Auto-Planer" else "Zaplanowane",
-                            "Naprawione_1_Wizyta": "Tak", "Kwota_Przewidywana": float(n_kwota),
-                            "Kwota_Koncowa": 0.0, "Czas_Pracy_Min": 0.0, "Wyniki_Przegladu": "",
-                            "Zdjecia_Potwierdzone": "Nie", "Zalecenia_Klienta": "",
-                            "Notatka_Serwisanta": "", "Data_Zamkniecia": "", "Podpis_Zlozony": "Nie"
+                            "Typ_Serwisu": n_typ_serw, "Serwisant": "", "Data_Planowana": "",
+                            "Status": "Nowe", "Naprawione_1_Wizyta": "Tak",
+                            "Kwota_Przewidywana": float(n_kwota), "Zgoda_Klienta_Kwota": float(n_zgoda),
+                            "Kwota_Koncowa": 0.0, "Koszt_Materialow": 0.0, "Forma_Platnosci": "Przelew",
+                            "Gotowka_Rozliczona": "Tak", "Czas_Pracy_Min": 0.0, "Wyniki_Przegladu": "",
+                            "Zdjecia_Potwierdzone": "Nie", "Zalecenia_Klienta": "", "Notatka_Serwisanta": "",
+                            "Data_Zamkniecia": "", "Podpis_Zlozony": "Nie",
+                            "Do_Oddzwonienia": "Tak" if n_oddzwonic else "Nie",
+                            "Data_Oddzwonienia": str(n_data_oddzw) if n_oddzwonic else "",
+                            "Potwierdzony_Tel": "Nie" if n_oddzwonic else "Tak",
+                            "Trudny_Klient": n_trudny,
+                            "Potrzebne_Czesci": "", "Lead_Handlowy": "", "Oddelegowano_Dzial": "",
+                            "Oddelegowano_Email": "", "Data_Oddelegowania": "", "Notatka_Dla_Dzialu": "",
+                            "Otrzymano_Oferte_Termin": "Nie", "Ostatnie_Przypomnienie": ""
                         }
                         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
                         save_tickets(df)
                         st.success(f"Dodano zgłoszenie {new_id}!")
                         st.rerun()
 
-        with col_edit:
-            st.subheader("✏️ Szybka edycja wybranego zgłoszenia")
-            with st.expander("Rozwiń formularz edycji zgłoszenia", expanded=False):
+        st.divider()
+
+        # Szybka edycja i Kopalnia Zleceń
+        sub_t1, sub_t2 = st.tabs(["📋 Pełna Baza Zgłoszeń i Szybka Edycja", "💰 Kopalnia Zleceń (Minął rok od przeglądu/serwisu)"])
+        with sub_t1:
+            f_c1, f_c2, f_c3 = st.columns(3)
+            with f_c1:
+                f_stat = st.multiselect("Status:", ["Nowe", "Zaplanowane", "W trakcie", "Do zamówienia części", "Oddelegowane", "Zakończone"], default=["Nowe", "Zaplanowane", "W trakcie", "Do zamówienia części", "Oddelegowane"])
+            with f_c2:
+                f_tech = st.multiselect("Serwisant:", [""] + list(profiles.keys()))
+            with f_c3:
+                f_q = st.text_input("Szukaj w bazie:")
+
+            v_df = df.copy()
+            if f_stat:
+                v_df = v_df[v_df["Status"].isin(f_stat)]
+            if f_tech:
+                v_df = v_df[v_df["Serwisant"].isin(f_tech)]
+            if f_q:
+                m_q = (
+                    v_df["Klient"].astype(str).str.contains(f_q, case=False, na=False) |
+                    v_df["Miasto"].astype(str).str.contains(f_q, case=False, na=False) |
+                    v_df["Adres"].astype(str).str.contains(f_q, case=False, na=False) |
+                    v_df["Kod_Pocztowy"].astype(str).str.contains(f_q, case=False, na=False)
+                )
+                v_df = v_df[m_q]
+
+            st.dataframe(v_df, use_container_width=True, hide_index=True)
+
+            with st.expander("✏️ Edytuj wybrane zgłoszenie (Zmień status / Włącz Oddzwonić)"):
                 if not df.empty:
-                    edit_opts = [f"{r['ID_Zgloszenia']} | {r['Miasto']} - {r['Klient']}" for _, r in df.iterrows()]
-                    sel_edit = st.selectbox("Wybierz zgłoszenie do edycji:", edit_opts)
-                    sel_edit_id = sel_edit.split(" | ")[0]
-                    e_idx = df[df["ID_Zgloszenia"] == sel_edit_id].index[0]
-                    e_row = df.loc[e_idx]
+                    e_opts = [f"{r['ID_Zgloszenia']} | {r['Klient']} ({r['Miasto']})" for _, r in df.iterrows()]
+                    s_ed = st.selectbox("Wybierz zgłoszenie:", e_opts)
+                    s_ed_id = s_ed.split(" | ")[0]
+                    e_i = df[df["ID_Zgloszenia"] == s_ed_id].index[0]
+                    er = df.loc[e_i]
+                    ec1, ec2, ec3, ec4 = st.columns(4)
+                    with ec1:
+                        ed_stat = st.selectbox("Status:", ["Nowe", "Zaplanowane", "W trakcie", "Do zamówienia części", "Oddelegowane", "Zakończone"], index=0)
+                        ed_tech = st.selectbox("Serwisant:", [""] + list(profiles.keys()))
+                    with ec2:
+                        ed_oddzw = st.selectbox("Do oddzwonienia?", ["Nie", "Tak"], index=1 if er["Do_Oddzwonienia"] == "Tak" else 0)
+                        ed_data_oddzw = st.text_input("Data oddzwonienia:", value=str(er["Data_Oddzwonienia"] or today_iso))
+                    with ec3:
+                        ed_zgoda = st.number_input("Zgoda klienta do (zł):", 0.0, 50000.0, float(er["Zgoda_Klienta_Kwota"]), 50.0)
+                        ed_trudny = st.selectbox("Trudny klient?", ["Nie", "Tak"], index=1 if er["Trudny_Klient"] == "Tak" else 0)
+                    with ec4:
+                        ed_kwota = st.number_input("Kwota przewidywana:", 0.0, 50000.0, float(er["Kwota_Przewidywana"]), 50.0)
+                    ed_opis = st.text_area("Opis zgłoszenia:", value=str(er["Opis_Zgloszenia"]))
+                    if st.button("💾 Zapisz zmiany w zgłoszeniu"):
+                        df.loc[e_i, "Status"] = ed_stat
+                        if ed_tech:
+                            df.loc[e_i, "Serwisant"] = ed_tech
+                        df.loc[e_i, "Do_Oddzwonienia"] = ed_oddzw
+                        df.loc[e_i, "Data_Oddzwonienia"] = ed_data_oddzw
+                        df.loc[e_i, "Zgoda_Klienta_Kwota"] = float(ed_zgoda)
+                        df.loc[e_i, "Trudny_Klient"] = ed_trudny
+                        df.loc[e_i, "Kwota_Przewidywana"] = float(ed_kwota)
+                        df.loc[e_i, "Opis_Zgloszenia"] = ed_opis
+                        save_tickets(df)
+                        st.success("Zapisano!")
+                        st.rerun()
 
-                    with st.form("quick_edit_ticket_form"):
-                        e_klient = st.text_input("Klient:", value=str(e_row["Klient"]))
-                        e_tel = st.text_input("Telefon (np. dwa numery po /):", value=str(e_row["Telefon"]))
-                        e_kod = st.text_input("Kod pocztowy:", value=str(e_row["Kod_Pocztowy"]))
-                        e_miasto = st.text_input("Miasto:", value=str(e_row["Miasto"]))
-                        e_adres = st.text_input("Adres:", value=str(e_row["Adres"]))
-                        e_inst = st.text_input("Urządzenie / Instalacja:", value=str(e_row["Typ_Instalacji"]))
-                        e_przeg = st.selectbox("Wymagany przegląd z protokołem:", ["Nie", "Tak"], index=1 if str(e_row.get("Wymagany_Przeglad", "Nie")) == "Tak" else 0)
+        with sub_t2:
+            st.markdown("#### 💰 Klienci z bazy historycznej do corocznego przeglądu / wymiany glikolu")
+            old_closed = df[df["Status"] == "Zakończone"].copy()
+            if not old_closed.empty:
+                st.dataframe(old_closed[["ID_Zgloszenia", "Klient", "Telefon", "Kod_Pocztowy", "Miasto", "Adres", "Typ_Instalacji", "Data_Planowana", "Kwota_Przewidywana"]].head(50), use_container_width=True, hide_index=True)
 
-                        tech_choices = [""] + list(profiles.keys())
-                        curr_tech = str(e_row["Serwisant"]) if str(e_row["Serwisant"]) in tech_choices else ""
-                        e_tech = st.selectbox("Przypisany serwisant:", tech_choices, index=tech_choices.index(curr_tech))
+    # ----------------------------------------------------
+    # ZAKŁADKA 2: PLANER KORYTARZOWY I KALKULATOR CZYSTEGO ZYSKU (1200 ZŁ NETTO)
+    # ----------------------------------------------------
+    with tab_plan:
+        st.subheader("🗺️ Planer Korytarzowy („Po Drodze”) + Kalkulator Czystego Zysku (Cel: min. 1200 zł na czysto)")
+        st.markdown(
+            f"**Parametry kosztowe w algorytmie:** Godzina pracy serwisanta = **`{DEFAULT_HOURLY_RATE:.0f} zł/h`** | "
+            f"Paliwo = **`{DEFAULT_FUEL_PRICE:.2f} zł/l`** | Średni czas u 1 klienta = **`{DEFAULT_ONSITE_HOURS} h` (105 zł)** | "
+            f"Współczynnik krętości dróg = **`{ROAD_TORTUOSITY}x GPS`**."
+        )
 
-                        status_choices = ["Nowe", "Zaplanowane", "W trakcie", "Zakończone"]
-                        curr_stat = str(e_row["Status"]) if str(e_row["Status"]) in status_choices else "Nowe"
-                        e_status = st.selectbox("Status:", status_choices, index=status_choices.index(curr_stat))
+        pc1, pc2, pc3, pc4, pc5 = st.columns(5)
+        with pc1:
+            sel_tech_plan = st.selectbox("Serwisant:", list(profiles.keys()), key="cor_tech")
+        with pc2:
+            start_postal = st.text_input("Punkt Startowy (Baza):", value="05-552", help="Domyślnie 05-552 Łazy / Pruszków")
+        with pc3:
+            target_postal = st.text_input("Kod Docelowy (Cel):", value="05-800")
+        with pc4:
+            search_mode = st.selectbox("Tryb szukania:", ["Korytarz trasy (Po drodze + Okolica celu)", "Koło wokół kodu docelowego"])
+        with pc5:
+            corridor_width_km = st.slider("Szerokość korytarza / Promień [km]:", 10, 150, 40, 5)
 
-                        e_data_plan = st.text_input("Data planowana (RRRR-MM-DD):", value=str(e_row["Data_Planowana"]))
-                        e_kryt = st.selectbox("Krytyczne:", ["Nie", "Tak"], index=1 if str(e_row["Priorytet_Krytyczny"]) == "Tak" else 0)
-                        e_kwota = st.number_input("Kwota przewidywana (zł):", min_value=0.0, step=50.0, value=float(e_row["Kwota_Przewidywana"]))
-                        e_opis = st.text_area("Opis zgłoszenia:", value=str(e_row["Opis_Zgloszenia"]))
+        p_c_extra1, p_c_extra2, p_c_extra3 = st.columns(3)
+        with p_c_extra1:
+            plan_date = st.date_input("Data wyjazdu:", value=datetime.date.today() + datetime.timedelta(days=1))
+        with p_c_extra2:
+            burn_rate = st.number_input("Spalanie busa [l/100km]:", 5.0, 20.0, DEFAULT_BURN_L_100KM, 0.5)
+        with p_c_extra3:
+            only_confirmed = st.checkbox("Tylko potwierdzone telefonicznie", value=False)
 
-                        if st.form_submit_button("💾 Zapisz zmiany w zgłoszeniu", type="primary"):
-                            df.loc[e_idx, "Klient"] = e_klient
-                            df.loc[e_idx, "Telefon"] = e_tel
-                            df.loc[e_idx, "Kod_Pocztowy"] = e_kod
-                            df.loc[e_idx, "Miasto"] = e_miasto
-                            df.loc[e_idx, "Adres"] = e_adres
-                            df.loc[e_idx, "Typ_Instalacji"] = e_inst
-                            df.loc[e_idx, "Wymagany_Przeglad"] = e_przeg
-                            df.loc[e_idx, "Serwisant"] = e_tech
-                            df.loc[e_idx, "Status"] = e_status
-                            df.loc[e_idx, "Data_Planowana"] = e_data_plan
-                            df.loc[e_idx, "Priorytet_Krytyczny"] = e_kryt
-                            df.loc[e_idx, "Kwota_Przewidywana"] = float(e_kwota)
-                            df.loc[e_idx, "Opis_Zgloszenia"] = e_opis
+        start_lat, start_lon = get_coords_for_postal(start_postal)
+        dest_lat, dest_lon = get_coords_for_postal(target_postal)
+
+        pending_df = df[df["Status"].isin(["Nowe", "Do zaplanowania", ""])].copy()
+        if only_confirmed:
+            pending_df = pending_df[pending_df["Potwierdzony_Tel"] == "Tak"]
+
+        if not pending_df.empty:
+            dist_from_start = []
+            dist_from_dest = []
+            dist_from_corridor = []
+            coords_list = []
+
+            for _, r in pending_df.iterrows():
+                rlat, rlon = extract_coords_from_row(r)
+                coords_list.append((rlat, rlon))
+                d_s = haversine_km(start_lat, start_lon, rlat, rlon)
+                d_d = haversine_km(dest_lat, dest_lon, rlat, rlon)
+                d_c = distance_from_segment_km(rlat, rlon, start_lat, start_lon, dest_lat, dest_lon)
+                dist_from_start.append(round(d_s * ROAD_TORTUOSITY, 1))
+                dist_from_dest.append(round(d_d, 1))
+                dist_from_corridor.append(round(d_c, 1))
+
+            pending_df["Km_od_Bazy"] = dist_from_start
+            pending_df["Km_od_Celu_GPS"] = dist_from_dest
+            pending_df["Km_od_Osi_Trasy"] = dist_from_corridor
+            pending_df["_coords"] = coords_list
+
+            if search_mode.startswith("Korytarz"):
+                filtered_plan = pending_df[
+                    (pending_df["Km_od_Osi_Trasy"] <= corridor_width_km) |
+                    (pending_df["Km_od_Celu_GPS"] <= corridor_width_km)
+                ].sort_values(by=["Priorytet_Krytyczny", "Km_od_Osi_Trasy"], ascending=[False, True]).copy()
+            else:
+                filtered_plan = pending_df[pending_df["Km_od_Celu_GPS"] <= corridor_width_km].sort_values(by="Km_od_Celu_GPS").copy()
+
+            st.markdown(f"#### 📍 Znalezione zlecenia na trasie `{start_postal} ➔ {target_postal}` ({len(filtered_plan)} poz.):")
+            st.caption("Zaznacz zlecenia w kolumnie **Wybierz**, a kalkulator poniżej na żywo policzy pełną pętlę kilometrów, paliwo, roboczogodziny i **Czysty Zysk**.")
+
+            if not filtered_plan.empty:
+                disp_cols = [
+                    "ID_Zgloszenia", "Km_od_Osi_Trasy", "Km_od_Bazy", "Klient", "Kod_Pocztowy",
+                    "Miasto", "Adres", "Typ_Instalacji", "Priorytet_Krytyczny", "Kwota_Przewidywana", "Opis_Zgloszenia"
+                ]
+                editor_df = filtered_plan[disp_cols].copy()
+                editor_df.insert(0, "Wybierz", False)
+
+                edited_route = st.data_editor(
+                    editor_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    key="corridor_editor"
+                )
+
+                chosen_ids = edited_route[edited_route["Wybierz"] == True]["ID_Zgloszenia"].tolist()
+                chosen_rows = filtered_plan[filtered_plan["ID_Zgloszenia"].isin(chosen_ids)]
+
+                chosen_coords = chosen_rows["_coords"].tolist()
+                gross_rev = float(chosen_rows["Kwota_Przewidywana"].sum())
+
+                econ = estimate_route_economics(
+                    chosen_coords, (start_lat, start_lon), gross_rev, parts_cost=0.0,
+                    hourly_rate=DEFAULT_HOURLY_RATE, fuel_price=DEFAULT_FUEL_PRICE,
+                    burn_l_100km=burn_rate, onsite_hours_per_client=DEFAULT_ONSITE_HOURS
+                )
+
+                # Baner ekonomiki trasy na żywo
+                st.markdown("### 📊 Kalkulacja Rentowności Wybranej Trasy (Na Żywo)")
+                ek1, ek2, ek3, ek4, ek5 = st.columns(5)
+                ek1.metric("Dystans pętli (z powrotem)", f"{econ['road_km']} km", f"Jazda: {econ['drive_hours']} h")
+                ek2.metric("Przychód ze zleceń", f"{gross_rev:,.0f} zł", f"Punkty: {len(chosen_ids)}")
+                ek3.metric("Koszt paliwa (8 zł/l)", f"-{econ['fuel_cost']:,.0f} zł", f"Spalanie: {burn_rate}l/100km")
+                ek4.metric("Koszt pracy (Jazda + Klient)", f"-{(econ['labor_drive_cost'] + econ['labor_onsite_cost']):,.0f} zł", f"Łącznie: {econ['drive_hours'] + econ['onsite_hours']:.1f} h x 70 zł")
+                ek5.metric("💎 CZYSTY ZYSK (Cel >=1200 zł)", f"{econ['net_profit']:,.0f} zł", delta=f"{econ['net_profit'] - TARGET_NET_PROFIT:,.0f} zł vs cel")
+
+                if len(chosen_ids) > 0:
+                    if econ["net_profit"] >= TARGET_NET_PROFIT:
+                        st.success(f"✅ **TRASA RENTOWNA!** Czysty zysk po odjęciu paliwa i czasu pracy wynosi **{econ['net_profit']:,.2f} zł** (przekracza próg 1200 zł).")
+                    else:
+                        brakuje_netto = TARGET_NET_PROFIT - econ["net_profit"]
+                        st.warning(f"⚠️ **UWAGA:** Do założonego czystego zysku 1200 zł brakuje jeszcze **{brakuje_netto:,.0f} zł**. Dobierz jeszcze 1 zlecenie po drodze lub dosprzedaj przegląd/czyszczenie.")
+
+                    # Podpowiedź Hotel vs Powrót przy dalekich trasach (> 220 km w jedną stronę)
+                    if econ["road_km"] >= 420:
+                        return_cost = (econ["fuel_cost"] / 2.0) + (econ["labor_drive_cost"] / 2.0)
+                        st.info(f"🏨 **Kalkulator Hotel vs. Powrót:** Trasa ma {econ['road_km']} km. Sam powrót do bazy i ponowny dojazd jutro kosztuje ok. **{return_cost*2:,.0f} zł** (paliwo + godziny jazdy). Nocleg serwisanta w hotelu (~200 zł) pozwoli zaoszczędzić ok. **{max(0, return_cost*2 - 200):,.0f} zł**!")
+
+                    if st.button(f"🚀 ZATWIERDŹ I WYŚLIJ TRASĘ ({len(chosen_ids)} pkt) DO: {sel_tech_plan} NA DZIEŃ {plan_date}", type="primary"):
+                        for cid in chosen_ids:
+                            idx_m = df[df["ID_Zgloszenia"] == cid].index[0]
+                            df.loc[idx_m, "Serwisant"] = sel_tech_plan
+                            df.loc[idx_m, "Data_Planowana"] = str(plan_date)
+                            df.loc[idx_m, "Status"] = "Zaplanowane"
+                        save_tickets(df)
+                        st.success(f"Przypisano {len(chosen_ids)} zleceń dla {sel_tech_plan} na {plan_date}!")
+                        st.rerun()
+            else:
+                st.warning("Brak zleceń w zadanym korytarzu/promieniu. Zwiększ szerokość korytarza suwakiem powyżej.")
+
+    # ----------------------------------------------------
+    # ZAKŁADKA 3: ODDELEGOWANIA DO DZIAŁÓW (E-MAIL + 3 DNI WATCHDOG), CZĘŚCI I LEADY
+    # ----------------------------------------------------
+    with tab_oddeleguj:
+        st.subheader("📤 Oddelegowanie Zlecenia do Działu (Handlowy / Montaż / Specjalista Techniczny)")
+        st.caption("Wybierz zlecenie, wskaż dział lub konkretnego handlowca, dopisz notatkę i wyślij oficjalny e-mail. Jeśli w ciągu 3 dni nie zaznaczysz otrzymania oferty/terminu, system sam wyśle przypomnienie.")
+
+        del_c1, del_c2 = st.columns([1.2, 1])
+        with del_c1:
+            if not df.empty:
+                del_opts = [f"{r['ID_Zgloszenia']} | {r['Klient']} ({r['Miasto']} - {r['Typ_Instalacji']})" for _, r in df.iterrows()]
+                sel_del_str = st.selectbox("Wybierz zgłoszenie do przekazania:", del_opts, key="del_ticket_sel")
+                sel_del_id = sel_del_str.split(" | ")[0]
+                d_idx = df[df["ID_Zgloszenia"] == sel_del_id].index[0]
+                d_row = df.loc[d_idx]
+
+                dzial_choice = st.radio(
+                    "Wybierz dział docelowy:",
+                    ["Dział Handlowy (Oferta / Wymiana)", "Dział Montażu (Poprawka / Przebudowa)", "Specjalista Techniczny (Konsultacja)"],
+                    horizontal=True
+                )
+
+                target_email = ""
+                if dzial_choice.startswith("Dział Handlowy"):
+                    handlowcy_list = email_cfg.get("handlowcy", [])
+                    h_opts = [f"{h['nazwa']} <{h['email']}> ({h.get('rejon', '')})" for h in handlowcy_list]
+                    sel_h = st.selectbox("Wybierz Handlowca, do którego trafi oferta:", h_opts) if h_opts else ""
+                    if sel_h and "<" in sel_h:
+                        target_email = sel_h.split("<")[1].split(">")[0]
+                elif dzial_choice.startswith("Dział Montażu"):
+                    target_email = email_cfg.get("email_montaz", "")
+                else:
+                    target_email = email_cfg.get("email_technik", "")
+
+                target_email_input = st.text_input("Adres(y) e-mail odbiorcy (możesz dopisać po przecinku):", value=target_email)
+                notatka_dzial = st.text_area("Oficjalna notatka / wytyczne dla działu:", value=str(d_row.get("Notatka_Dla_Dzialu", "")))
+                att_files = st.file_uploader("Załącz zdjęcia tabliczki / instalacji do wiadomości e-mail (opcjonalnie):", accept_multiple_files=True, key="del_att")
+
+                if st.button("📧 WYŚLIJ E-MAIL I ODDELEGUJ ZLECENIE", type="primary"):
+                    subj = f"[PROMAG SERWIS -> {dzial_choice.split(' ')[1].upper()}] Zlecenie {sel_del_id} - {d_row['Klient']} ({d_row['Miasto']})"
+                    maps_link = f"https://www.google.com/maps/search/?api=1&query={d_row['Adres']}+{d_row['Kod_Pocztowy']}+{d_row['Miasto']}".replace(" ", "+")
+                    body_lines = [
+                        "Dzień dobry,",
+                        "",
+                        "Koordynator Serwisu PROMAG OZE przekazuje zgłoszenie do realizacji / przygotowania oferty:",
+                        "",
+                        "=========================================",
+                        f"ID ZGŁOSZENIA: {sel_del_id}",
+                        f"DZIAŁ DOCELOWY: {dzial_choice}",
+                        f"DATA PRZEKAZANIA: {today_iso}",
+                        "=========================================",
+                        f"KLIENT: {d_row['Klient']}",
+                        f"TELEFON: {d_row['Telefon']}",
+                        f"ADRES: {d_row['Kod_Pocztowy']} {d_row['Miasto']}, {d_row['Adres']}",
+                        f"MAPA GOOGLE: {maps_link}",
+                        f"URZĄDZENIE: {d_row['Typ_Instalacji']} ({d_row['Typ_Serwisu']})",
+                        "",
+                        "OFICJALNY OPIS ZGŁOSZENIA:",
+                        str(d_row['Opis_Zgloszenia']),
+                        "",
+                        "NOTATKA / WYTYCZNE DLA DZIAŁU:",
+                        str(notatka_dzial),
+                        "",
+                        "NOTATKA SERWISANTA Z TERENU:",
+                        str(d_row.get('Notatka_Serwisanta', 'Brak')),
+                        "=========================================",
+                        "UWAGA: Prosimy o przekazanie oferty lub terminu w ciągu 3 dni. Po 3 dniach system automatycznie wyśle przypomnienie."
+                    ]
+                    body = "\n".join(body_lines)
+
+                    df.loc[d_idx, "Status"] = "Oddelegowane"
+                    df.loc[d_idx, "Oddelegowano_Dzial"] = dzial_choice
+                    df.loc[d_idx, "Oddelegowano_Email"] = target_email_input
+                    df.loc[d_idx, "Data_Oddelegowania"] = today_iso
+                    df.loc[d_idx, "Notatka_Dla_Dzialu"] = notatka_dzial
+                    df.loc[d_idx, "Otrzymano_Oferte_Termin"] = "Nie"
+                    save_tickets(df)
+
+                    ok, msg_smtp = send_system_email(email_cfg, target_email_input, subj, body, attachments=att_files)
+                    if ok:
+                        st.success(f"Zlecenie oddelegowane! {msg_smtp}")
+                    else:
+                        st.warning(f"Zlecenie oznaczono jako Oddelegowane w bazie (Watchdog 3-dniowy aktywny). Status SMTP: {msg_smtp}")
+
+        with del_c2:
+            st.markdown("#### ⏳ Oddelegowane sprawy (Kontrola 3 dni na ofertę/termin)")
+            delegated_df = df[df["Oddelegowano_Dzial"].astype(str).str.strip() != ""].copy()
+            if not delegated_df.empty:
+                for del_i, del_r in delegated_df.iterrows():
+                    did = del_r["ID_Zgloszenia"]
+                    got_offer = (del_r["Otrzymano_Oferte_Termin"] == "Tak")
+                    badge = "🟢 Załatwione" if got_offer else "🔴 OCZEKUJE NA OFERTĘ / TERMIN"
+                    with st.container(border=True):
+                        st.markdown(f"**{did} – {del_r['Klient']}** | `{del_r['Oddelegowano_Dzial']}` ({del_r['Oddelegowano_Email']})")
+                        st.caption(f"Data przekazania: {del_r['Data_Oddelegowania']} | Status: {badge} | Notatka: {del_r['Notatka_Dla_Dzialu']}")
+                        if not got_offer:
+                            if st.button(f"✅ Potwierdź otrzymanie oferty/terminu ({did})", key=f"conf_del_{did}"):
+                                df.loc[del_i, "Otrzymano_Oferte_Termin"] = "Tak"
+                                save_tickets(df)
+                                st.rerun()
+            else:
+                st.info("Brak oddelegowanych zleceń.")
+
+        st.divider()
+        c_parts, c_leads = st.columns(2)
+        with c_parts:
+            st.markdown("#### 📦 Zlecenia oczekujące na zamówienie części")
+            parts_df = df[df["Status"] == "Do zamówienia części"]
+            if not parts_df.empty:
+                for p_i, p_r in parts_df.iterrows():
+                    pid = p_r["ID_Zgloszenia"]
+                    with st.container(border=True):
+                        st.markdown(f"**{pid} – {p_r['Klient']} ({p_r['Miasto']})** | Serwisant: {p_r['Serwisant']}")
+                        st.error(f"🛠️ **Potrzebna część:** {p_r['Potrzebne_Czesci']}")
+                        if st.button(f"✅ Część dotarła – przywróć do planowania ({pid})", key=f"part_ok_{pid}"):
+                            df.loc[p_i, "Status"] = "Nowe"
                             save_tickets(df)
-                            st.success(f"Zaktualizowano zgłoszenie {sel_edit_id}!")
                             st.rerun()
+            else:
+                st.success("Brak zleceń zablokowanych przez brak części.")
 
-        st.divider()
-        st.subheader("📋 Wykaz wszystkich zgłoszeń w bazie")
-        f_col1, f_col2, f_col3 = st.columns(3)
-        with f_col1:
-            filter_status = st.multiselect("Filtruj po statusie:", ["Nowe", "Zaplanowane", "W trakcie", "Zakończone"], default=["Nowe", "Zaplanowane", "W trakcie", "Zakończone"])
-        with f_col2:
-            filter_tech = st.multiselect("Filtruj po serwisancie:", [""] + list(profiles.keys()), default=[])
-        with f_col3:
-            search_q = st.text_input("🔍 Szukaj (Klient / Miasto / Adres / ID):")
+        with c_leads:
+            st.markdown("#### 🔥 Leady sprzedażowe przywiezione przez serwisantów")
+            leads_df = df[df["Lead_Handlowy"].astype(str).str.strip() != ""]
+            if not leads_df.empty:
+                st.dataframe(leads_df[["ID_Zgloszenia", "Klient", "Telefon", "Miasto", "Serwisant", "Lead_Handlowy"]], use_container_width=True, hide_index=True)
+            else:
+                st.info("Brak nowych leadów handlowych od serwisantów.")
 
-        view_df = df.copy()
-        if filter_status:
-            view_df = view_df[view_df["Status"].isin(filter_status)]
-        if filter_tech:
-            view_df = view_df[view_df["Serwisant"].isin(filter_tech)]
-        if search_q:
-            mask = (
-                view_df["Klient"].astype(str).str.contains(search_q, case=False, na=False) |
-                view_df["Miasto"].astype(str).str.contains(search_q, case=False, na=False) |
-                view_df["Adres"].astype(str).str.contains(search_q, case=False, na=False) |
-                view_df["ID_Zgloszenia"].astype(str).str.contains(search_q, case=False, na=False)
-            )
-            view_df = view_df[mask]
+    # ----------------------------------------------------
+    # ZAKŁADKA 4: KADRY, NARZĘDZIA, MAGAZYN BUSA I ROZLICZENIE GOTÓWKI
+    # ----------------------------------------------------
+    with tab_kadry:
+        st.subheader("👷 Kartoteka Serwisanta, Narzędzia, Stan Materiałowy na Aucie i Gotówka")
+        selected_tech = st.selectbox("Wybierz serwisanta:", list(profiles.keys()), key="kadry_tech_sel")
+        t_prof = profiles[selected_tech]
+        t_metrics = calculate_tech_metrics(df, selected_tech)
 
-        st.dataframe(view_df, use_container_width=True, hide_index=True)
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Obsłużone zlecenia", t_metrics["total_closed"], f"1. wizyta: {t_metrics['ftfr_pct']}%")
+        k2.metric("Obrót miesięczny", f"{t_metrics['monthly_revenue']:,.0f} zł", t_metrics["active_rate_str"])
+        k3.metric("💵 Gotówka w kieszeni (do zdania)", f"{t_metrics['cash_in_hand']:,.0f} zł")
+        k4.metric("🔥 Przywiezione Leady", t_metrics["leads_count"])
 
-    with tab_brand:
-        st.subheader("🎨 Branding Aplikacji – Wgraj Logo Firmy")
-        uploaded_logo = st.file_uploader("Wybierz plik graficzny z logo (PNG / JPG):", type=["png", "jpg", "jpeg"])
-        if uploaded_logo is not None:
-            img = Image.open(uploaded_logo)
-            img.thumbnail((400, 120))
-            buf = BytesIO()
-            img.save(buf, format="PNG")
-            b64_str = base64.b64encode(buf.getvalue()).decode("utf-8")
-            st.session_state["logo_b64"] = b64_str
-            with open(LOGO_FILE, "wb") as f:
-                f.write(buf.getvalue())
-            save_config_and_profiles(profiles, b64_str)
-            st.success("Logo zostało zapisane!")
-            st.rerun()
-
-        st.divider()
-        st.subheader("📥 Import / Podmiana bazy z pliku Excel (.xlsx)")
-        uploaded_excel = st.file_uploader("Wgraj plik Excel z bazą zgłoszeń:", type=["xlsx"])
-        if uploaded_excel is not None:
-            if st.button("⚠️ Wczytaj dane z tego pliku Excel i zapisz w Google Sheets"):
-                new_df = ensure_columns(pd.read_excel(uploaded_excel))
-                save_tickets(new_df)
-                st.success("Baza zgłoszeń została zaimportowana!")
+        if t_metrics["cash_in_hand"] > 0:
+            if st.button(f"💵 Potwierdź zdanie gotówki ({t_metrics['cash_in_hand']:,.0f} zł) w biurze przez: {selected_tech}", type="primary"):
+                mask_cash = (df["Serwisant"] == selected_tech) & (df["Forma_Platnosci"] == "Gotówka pobrana")
+                df.loc[mask_cash, "Gotowka_Rozliczona"] = "Tak"
+                save_tickets(df)
+                st.success("Rozliczono gotówkę serwisanta!")
                 st.rerun()
+
+        st.divider()
+        inv_c1, inv_c2 = st.columns(2)
+
+        with inv_c1:
+            st.markdown(f"#### 📦 Stan Materiałowy na Samochodzie ({selected_tech})")
+            st.caption("Edytuj ilości bezpośrednio w tabeli lub wgraj plik Excel/CSV ze stanem magazynowym.")
+            mat_list = t_prof.get("materialy", [])
+            ed_mat_kadry = st.data_editor(
+                pd.DataFrame(mat_list),
+                num_rows="dynamic",
+                use_container_width=True,
+                key=f"kadry_mat_{selected_tech}"
+            )
+            if st.button(f"💾 Zapisz stan materiałowy dla: {selected_tech}", type="primary"):
+                profiles[selected_tech]["materialy"] = ed_mat_kadry.to_dict(orient="records")
+                save_config_and_profiles(profiles)
+                st.success("Zapisano stan materiałowy na aucie!")
+                st.rerun()
+
+            up_mat_file = st.file_uploader(f"📥 Wgraj stan materiałowy z pliku CSV/XLSX dla {selected_tech}:", type=["csv", "xlsx"], key=f"up_m_{selected_tech}")
+            if up_mat_file is not None:
+                if st.button("Załaduj materiały z pliku"):
+                    loaded_m = pd.read_csv(up_mat_file) if up_mat_file.name.endswith(".csv") else pd.read_excel(up_mat_file)
+                    profiles[selected_tech]["materialy"] = loaded_m.to_dict(orient="records")
+                    save_config_and_profiles(profiles)
+                    st.success("Wgrano stan materiałowy!")
+                    st.rerun()
+
+        with inv_c2:
+            st.markdown(f"#### 🧰 Lista Narzędzi i Wyposażenia ({selected_tech})")
+            st.caption("Wykaz narzędzi przypisanych do serwisanta wraz z ilościami.")
+            tools_list = t_prof.get("narzedzia", [])
+            ed_tools_kadry = st.data_editor(
+                pd.DataFrame(tools_list),
+                num_rows="dynamic",
+                use_container_width=True,
+                key=f"kadry_tools_{selected_tech}"
+            )
+            if st.button(f"💾 Zapisz listę narzędzi dla: {selected_tech}", type="primary"):
+                profiles[selected_tech]["narzedzia"] = ed_tools_kadry.to_dict(orient="records")
+                save_config_and_profiles(profiles)
+                st.success("Zapisano listę narzędzi!")
+                st.rerun()
+
+            up_tools_file = st.file_uploader(f"📥 Wgraj listę narzędzi z pliku CSV/XLSX dla {selected_tech}:", type=["csv", "xlsx"], key=f"up_t_{selected_tech}")
+            if up_tools_file is not None:
+                if st.button("Załaduj narzędzia z pliku"):
+                    loaded_t = pd.read_csv(up_tools_file) if up_tools_file.name.endswith(".csv") else pd.read_excel(up_tools_file)
+                    profiles[selected_tech]["narzedzia"] = loaded_t.to_dict(orient="records")
+                    save_config_and_profiles(profiles)
+                    st.success("Wgrano listę narzędzi!")
+                    st.rerun()
+
+        st.divider()
+        with st.expander("📋 Dane osobowe, PIN, Umowa, BHP, Flota i Urlopy"):
+            with st.form(f"form_kadry_full_{selected_tech}"):
+                fk1, fk2, fk3 = st.columns(3)
+                with fk1:
+                    new_fn = st.text_input("Pełne dane:", value=t_prof.get("pelne_dane", ""))
+                    new_pin = st.text_input("Kod PIN:", value=str(t_prof.get("pin", "")))
+                with fk2:
+                    new_sal = st.number_input("Podstawa (zł):", 0.0, 30000.0, float(t_prof.get("wynagrodzenie_bazowe", 6000.0)), 100.0)
+                    new_rej = st.text_input("Nr rej. auta:", value=t_prof.get("flota", {}).get("nr_rej", ""))
+                with fk3:
+                    new_odo_k = st.number_input("Przebieg [km]:", 0, 1000000, int(t_prof.get("flota", {}).get("przebieg_km", 120000)), 500)
+                    new_olej_k = st.number_input("Kolejny serwis olejowy przy [km]:", 0, 1000000, int(t_prof.get("flota", {}).get("limit_olej_km", 130000)), 1000)
+                if st.form_submit_button("💾 Zapisz dane kadrowe i flotowe"):
+                    t_prof["pelne_dane"] = new_fn
+                    t_prof["pin"] = new_pin
+                    t_prof["wynagrodzenie_bazowe"] = new_sal
+                    t_prof["flota"]["nr_rej"] = new_rej
+                    t_prof["flota"]["przebieg_km"] = new_odo_k
+                    t_prof["flota"]["limit_olej_km"] = new_olej_k
+                    save_config_and_profiles(profiles)
+                    st.success("Zapisano!")
+
+    # ----------------------------------------------------
+    # ZAKŁADKA 5: USTAWIENIA E-MAIL (SMTP + HANDLOWCY), LOGO I IMPORT EXCEL
+    # ----------------------------------------------------
+    with tab_ustawienia:
+        st.subheader("⚙️ Konfiguracja Konta E-mail (SMTP) i Adresów Działów / Handlowców")
+        em_c1, em_c2 = st.columns(2)
+        with em_c1:
+            with st.form("form_smtp_settings"):
+                st.markdown("#### 📧 Serwer Poczty Wychodzącej (SMTP)")
+                s_host = st.text_input("Serwer SMTP (np. smtp.gmail.com):", value=email_cfg.get("smtp_server", "smtp.gmail.com"))
+                s_port = st.number_input("Port SMTP (587 dla TLS lub 465 dla SSL):", value=int(email_cfg.get("smtp_port", 587)))
+                s_user = st.text_input("Adres e-mail nadawcy:", value=email_cfg.get("sender_email", ""))
+                s_pass = st.text_input("Hasło (lub Hasło Aplikacji Google):", value=email_cfg.get("sender_password", ""), type="password")
+                st.markdown("#### 🛠️ Adresy Działu Montażu i Specjalisty Technicznego")
+                e_montaz = st.text_input("E-mail Działu Montażu:", value=email_cfg.get("email_montaz", ""))
+                e_technik = st.text_input("E-mail Specjalisty Technicznego:", value=email_cfg.get("email_technik", ""))
+
+                if st.form_submit_button("💾 Zapisz konfigurację SMTP i adresy działów", type="primary"):
+                    email_cfg["smtp_server"] = s_host
+                    email_cfg["smtp_port"] = int(s_port)
+                    email_cfg["sender_email"] = s_user
+                    email_cfg["sender_password"] = s_pass
+                    email_cfg["email_montaz"] = e_montaz
+                    email_cfg["email_technik"] = e_technik
+                    st.session_state["email_cfg"] = email_cfg
+                    save_config_and_profiles(profiles, email_cfg=email_cfg)
+                    st.success("Zapisano ustawienia poczty!")
+
+            if st.button("🧪 Wyślij testowy e-mail na adres nadawcy"):
+                ok_t, msg_t = send_system_email(email_cfg, email_cfg.get("sender_email", ""), "Test SMTP - PROMAG OZE", "Połączenie SMTP działa prawidłowo!")
+                if ok_t:
+                    st.success(msg_t)
+                else:
+                    st.error(msg_t)
+
+        with em_c2:
+            st.markdown("#### 💼 Lista Handlowców (Do wyboru przy oddelegowywaniu ofert)")
+            st.caption("Dodaj dowolną liczbę handlowców. Przy oddelegowaniu zlecenia wybierzesz z listy, do którego handlowca ma trafić temat.")
+            h_df = pd.DataFrame(email_cfg.get("handlowcy", []))
+            ed_h_df = st.data_editor(h_df, num_rows="dynamic", use_container_width=True, key="editor_handlowcy")
+            if st.button("💾 Zapisz listę handlowców", type="primary"):
+                email_cfg["handlowcy"] = ed_h_df.to_dict(orient="records")
+                st.session_state["email_cfg"] = email_cfg
+                save_config_and_profiles(profiles, email_cfg=email_cfg)
+                st.success("Zaktualizowano listę handlowców!")
+
+        st.divider()
+        b_c1, b_c2 = st.columns(2)
+        with b_c1:
+            st.subheader("🎨 Wgraj Logo Firmy")
+            uploaded_logo = st.file_uploader("Wybierz plik PNG/JPG:", type=["png", "jpg", "jpeg"])
+            if uploaded_logo is not None:
+                img = Image.open(uploaded_logo)
+                img.thumbnail((400, 120))
+                buf = BytesIO()
+                img.save(buf, format="PNG")
+                b64_str = base64.b64encode(buf.getvalue()).decode("utf-8")
+                st.session_state["logo_b64"] = b64_str
+                save_config_and_profiles(profiles, logo_b64=b64_str)
+                st.success("Logo zapisane!")
+                st.rerun()
+        with b_c2:
+            st.subheader("📥 Import Bazy Zgłoszeń z pliku Excel (.xlsx)")
+            uploaded_excel = st.file_uploader("Wgraj plik .xlsx:", type=["xlsx"])
+            if uploaded_excel is not None:
+                if st.button("⚠️ Zaimportuj dane z pliku Excel"):
+                    new_df = ensure_columns(pd.read_excel(uploaded_excel))
+                    save_tickets(new_df)
+                    st.success(f"Zaimportowano {len(new_df)} zgłoszeń!")
+                    st.rerun()
 
 # ==========================================
 # 8. PANEL ZARZĄDU
@@ -1608,69 +1896,22 @@ elif st.session_state["logged_role"] == "zarzad":
     df = st.session_state["df_tickets"]
     profiles = st.session_state["profiles"]
 
-    st.subheader("📊 Panel Zarządu – Raporty Operacyjne i Finansowe")
-    rep_tab_day, rep_tab_month = st.tabs(["📅 Raport Dzienny z Pracy Serwisantów", "📈 Raport Miesięczny i Prowizje"])
-
-    with rep_tab_day:
-        sel_date = st.date_input("Wybierz dzień raportu:", value=datetime.date.today())
-        sel_date_str = str(sel_date)
-
-        day_df = df[(df["Data_Zamkniecia"] == sel_date_str) | (df["Data_Planowana"] == sel_date_str)].copy()
-        closed_day = day_df[day_df["Status"] == "Zakończone"]
-
-        dc1, dc2, dc3, dc4 = st.columns(4)
-        dc1.metric("Przychód w wybranym dniu", f"{closed_day['Kwota_Koncowa'].sum():,.2f} zł")
-        dc2.metric("Zlecenia zamknięte dzisiaj", f"{len(closed_day)} / {len(day_df)}")
-        ftfr_day = round((len(closed_day[closed_day["Naprawione_1_Wizyta"] == "Tak"]) / len(closed_day) * 100.0), 1) if len(closed_day) > 0 else 100.0
-        dc3.metric("Skuteczność 1. wizyty (Dzień)", f"{ftfr_day}%")
-        dc4.metric("Łączny czas pracy w terenie", f"{int(closed_day['Czas_Pracy_Min'].sum())} min")
-
-        day_rows = []
-        for t_name in profiles.keys():
-            t_day = closed_day[closed_day["Serwisant"] == t_name]
-            day_rows.append({
-                "Serwisant": t_name,
-                "Zamknięte zlecenia": len(t_day),
-                "Serwisy Płatne": len(t_day[t_day["Typ_Serwisu"] == "Płatny"]),
-                "Serwisy Gwarancyjne": len(t_day[t_day["Typ_Serwisu"] == "Gwarancyjny"]),
-                "Naprawione od ręki (1. wizyta)": len(t_day[t_day["Naprawione_1_Wizyta"] == "Tak"]),
-                "Czas pracy (min)": int(t_day["Czas_Pracy_Min"].sum()),
-                "Przychód (zł)": float(t_day["Kwota_Koncowa"].sum())
-            })
-        st.dataframe(pd.DataFrame(day_rows), use_container_width=True, hide_index=True)
-        st.dataframe(day_df, use_container_width=True, hide_index=True)
-
-    with rep_tab_month:
-        months_avail = sorted(list(set(
-            [datetime.date.today().strftime("%Y-%m")] +
-            [str(x)[:7] for x in df["Data_Zamkniecia"].unique() if len(str(x)) >= 7]
-        )), reverse=True)
-        sel_month = st.selectbox("Wybierz miesiąc rozliczeniowy (RRRR-MM):", months_avail)
-        m_df = df[(df["Status"] == "Zakończone") & (df["Data_Zamkniecia"].astype(str).str.startswith(sel_month))].copy()
-
-        mc1, mc2, mc3, mc4 = st.columns(4)
-        mc1.metric("Przychód miesięczny ogółem", f"{m_df['Kwota_Koncowa'].sum():,.2f} zł")
-        mc2.metric("Obsłużone zgłoszenia", len(m_df))
-        mc3.metric("Płatne vs Gwarancyjne", f"{len(m_df[m_df['Typ_Serwisu']=='Płatny'])} / {len(m_df[m_df['Typ_Serwisu']=='Gwarancyjny'])}")
-        ftfr_m = round((len(m_df[m_df["Naprawione_1_Wizyta"] == "Tak"]) / len(m_df) * 100.0), 1) if len(m_df) > 0 else 100.0
-        mc4.metric("Skuteczność 1. wizyty (Miesiąc)", f"{ftfr_m}%")
-
-        month_summary = []
-        for t_name, t_prof in profiles.items():
-            tm = calculate_tech_metrics(df, t_name)
-            base_sal = float(t_prof.get("wynagrodzenie_bazowe", 0.0))
-            month_summary.append({
-                "Serwisant": t_name,
-                "Umowa": t_prof.get("umowa", ""),
-                "Zlecenia ogółem": tm["total_closed"],
-                "Płatne": tm["paid_count"],
-                "Gwarancyjne": tm["warranty_count"],
-                "Skuteczność 1. wizyty (%)": f"{tm['ftfr_pct']}%",
-                "Obrót miesięczny (zł)": round(tm["monthly_revenue"], 2),
-                "Brakuje do 3% (15 tys.)": round(tm["missing_tier_1"], 2),
-                "Brakuje do 4% (30 tys.)": round(tm["missing_tier_2"], 2),
-                "Podstawa (zł)": base_sal,
-                "Należna prowizja (zł)": round(tm["commission_pln"], 2),
-                "Łącznie do wypłaty (zł)": round(base_sal + tm["commission_pln"], 2)
-            })
-        st.dataframe(pd.DataFrame(month_summary), use_container_width=True, hide_index=True)
+    st.subheader("📊 Panel Zarządu – Raporty Operacyjne, Gotówka, Marża i Prowizje")
+    month_summary = []
+    for t_name, t_prof in profiles.items():
+        tm = calculate_tech_metrics(df, t_name)
+        base_sal = float(t_prof.get("wynagrodzenie_bazowe", 0.0))
+        month_summary.append({
+            "Serwisant": t_name,
+            "Umowa": t_prof.get("umowa", ""),
+            "Zamknięte": tm["total_closed"],
+            "1. Wizyta (%)": f"{tm['ftfr_pct']}%",
+            "Leady Handlowe": tm["leads_count"],
+            "Gotówka nierozliczona (zł)": round(tm["cash_in_hand"], 2),
+            "Obrót miesięczny (zł)": round(tm["monthly_revenue"], 2),
+            "Koszt zużytych materiałów (zł)": round(tm["monthly_parts_cost"], 2),
+            "Podstawa (zł)": base_sal,
+            "Prowizja (zł)": round(tm["commission_pln"], 2),
+            "Do wypłaty (zł)": round(base_sal + tm["commission_pln"], 2)
+        })
+    st.dataframe(pd.DataFrame(month_summary), use_container_width=True, hide_index=True)
