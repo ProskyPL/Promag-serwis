@@ -1,206 +1,215 @@
-
 # -*- coding: utf-8 -*-
 """
-Moduł Bazy Wiedzy, Cenników, Domyślnych Magazynów i Współrzędnych Kodów Pocztowych
-dla systemu PROMAG OZE.
+Moduł Bazy Wiedzy, Przeszukiwarki PDF/Zdjęć (OCR) oraz Praktycznych Rozwiązań (baza_wiedzy.py)
 """
+import os
+import re
+import urllib.parse
 
-CENNIK_BAZOWY = {
-    "Przegląd/Konserwacja PC (Powietrze)": 650.0,
-    "Przegląd/Konserwacja PC (Grunt)": 850.0,
-    "Przegląd instalacji PV (<10 kWp)": 550.0,
-    "Przegląd instalacji PV (>10 kWp)": 800.0,
-    "Diagnostyka / Awaria Pompy Ciepła": 750.0,
-    "Diagnostyka / Awaria Falownika PV": 600.0,
-    "Wymiana glikolu + odpowietrzenie układu": 1120.0,
-    "Odpowietrzenie układu solarnego / CO": 840.0,
-    "Czyszczenie filtrów i separatora magnetycznego": 400.0,
-    "Pomiary elektryczne + Protokół": 650.0,
-    "Wymiana anody magnezowej / tytanowej": 450.0,
-    "Serwis Gwarancyjny (Rozliczenie wewnętrzne)": 0.0
-}
-
-DOMYSLNE_NARZEDZIA = [
-    {"nazwa": "Miernik cęgowy DC/AC + Megaomomierz Riso", "ilosc": 1, "stan": "Sprawny"},
-    {"nazwa": "Refraktometr optyczny do glikolu + paski pH", "ilosc": 1, "stan": "Sprawny"},
-    {"nazwa": "Pompa elektryczna do napełniania i płukania solarów", "ilosc": 1, "stan": "Sprawny"},
-    {"nazwa": "Zestaw manometrów chłodniczych (R32 / R410A) + detektor gazu", "ilosc": 1, "stan": "Sprawny"},
-    {"nazwa": "Klucz dynamometryczny (M3-M10) + zaciskarka MC4/RJ45", "ilosc": 1, "stan": "Sprawny"},
-    {"nazwa": "Wiertarka udarowa + skrzynka narzędziowa instalatora", "ilosc": 1, "stan": "Sprawny"}
-]
-
-DOMYSLNE_MATERIALY = [
-    {"kod": "MAT-01", "nazwa": "Glikol propylenowy solarny/PC (bańka 20L)", "ilosc": 4, "cena_zakupu": 180.0, "cena_sprzedazy": 320.0},
-    {"kod": "MAT-02", "nazwa": "Anoda magnezowa 3/4 cala do zasobnika", "ilosc": 4, "cena_zakupu": 45.0, "cena_sprzedazy": 120.0},
-    {"kod": "MAT-03", "nazwa": "Naczynie przeponowe solarne/CO 18L", "ilosc": 2, "cena_zakupu": 140.0, "cena_sprzedazy": 280.0},
-    {"kod": "MAT-04", "nazwa": "Czujnik temperatury NTC 10k / PT1000", "ilosc": 5, "cena_zakupu": 20.0, "cena_sprzedazy": 80.0},
-    {"kod": "MAT-05", "nazwa": "Odpowietrznik automatyczny solarny 150 st.C", "ilosc": 3, "cena_zakupu": 35.0, "cena_sprzedazy": 90.0},
-    {"kod": "MAT-06", "nazwa": "Zawór bezpieczeństwa 3 bar / 6 bar", "ilosc": 3, "cena_zakupu": 30.0, "cena_sprzedazy": 85.0},
-    {"kod": "MAT-07", "nazwa": "Wkładka ochronnika przepięć SPD DC", "ilosc": 4, "cena_zakupu": 55.0, "cena_sprzedazy": 140.0},
-    {"kod": "MAT-08", "nazwa": "Komplet złączy MC4 oryginał (para + i -)", "ilosc": 10, "cena_zakupu": 8.0, "cena_sprzedazy": 25.0}
-]
+try:
+    import pypdf
+except ImportError:
+    pypdf = None
 
 DIAGNOSTYKA_BAZA = {
-    "Falownik Deye (Hybrydowy SUN-3K-12K-SG05LP3 / Stringowy)": {
-        "F01 / F07 - Błąd polaryzacji DC / Awaria START DC": (
-            "CO TO ZNACZY: Odwrotna polaryzacja na wejściu PV lub napięcie szyny BUS nie może wystartować z PV/baterii.\n"
+    "Falownik Deye (SUN-3K..12K-SG05LP3-EU-SM2 / String)": {
+        "F01 / F07 - DC Reverse Polarity / DC START Fault": (
+            "CO TO ZNACZY: Odwrotna polaryzacja wejścia DC (PV) lub brak możliwości zbudowania napięcia szyny DC BUS.\n"
             "PROCEDURA KROK PO KROKU:\n"
-            "1. Wyłącz rozłącznik DC i zmierz multimetrem biegunowość stringów (+ do +, - do -).\n"
-            "2. Zrestartuj inwerter (Bateria -> DC -> AC)."
+            "1. Wyłącz rozłącznik DC i zmierz polaryzację każdego stringu PV miernikiem (+ do +, - do -).\n"
+            "2. Zrestartuj falownik (wyłącz Baterię -> DC -> AC, odczekaj 2 minuty, włącz ponownie)."
         ),
         "F08 - GFDI_Relay_Failure (Błąd przekaźnika uziemienia / N-PE)": (
-            "CO TO ZNACZY: Falownik wykrył problem z uziemieniem obudowy lub przebicie między N a PE.\n"
+            "CO TO ZNACZY: Problem z uziemieniem obudowy lub nieprawidłowy potencjał między N a PE.\n"
             "PROCEDURA KROK PO KROKU:\n"
-            "1. Wyłącz falownik (AC, DC, Bateria) i odczekaj 5 minut.\n"
-            "2. Zmierz miernikiem napięcie AC między szyną N a PE w rozdzielnicy (norma < 5-10V).\n"
-            "3. W menu Deye (Advanced Function -> kod 7777) zweryfikuj opcję 'Signal ISLAND MODE' (powinna być włączona przy pracy z obwodem Backup/LOAD)."
+            "1. Zmierz napięcie AC między szyną N a PE w rozdzielnicy (norma < 5-10V).\n"
+            "2. W menu Deye (Advanced Function -> kod 7777) sprawdź opcję 'Signal Island Mode' (przekaźnik zwierający N-PE w trybie wyspowym na porcie LOAD)."
         ),
-        "F13 - Working_Mode_Change (Reset trybu pracy / Zmiana parametrów sieci)": (
-            "CO TO ZNACZY: Zmiana parametrów sieci, przełączenie w tryb 'Brak aku' lub zmiana trybu pracy.\n"
+        "F13 - Working_Mode_Change (Reset trybu pracy / Zmiana sieci)": (
+            "CO TO ZNACZY: Zmiana parametrów sieci, przełączenie w tryb Brak Aku lub zmiana System Work Mode.\n"
             "PROCEDURA KROK PO KROKU:\n"
-            "1. Odczekaj 3 minuty – falownik zazwyczaj sam odliczy czas i wystartuje.\n"
-            "2. Jeśli wisi: wyłącz AC, przełącz hebel DC na OFF, wyłącz baterię. Odczekaj 2 minuty do wygaszenia LCD. Włącz: AC -> DC -> Bateria."
+            "1. Odczekaj 3 minuty – zazwyczaj znika automatycznie po autoteście.\n"
+            "2. Jeśli wisi: wyłącz DC, Baterię i AC na 2 minuty i uruchom ponownie."
         ),
-        "F15 / F18 / F34 - Tz_Ac_OverCurr_Fault (Zwarcie lub przetężenie po stronie AC / LOAD)": (
-            "CO TO ZNACZY: Przeciążenie prądowe na wyjściu AC lub w obwodzie awaryjnym LOAD (Backup).\n"
+        "F15 / F18 / F34 - AC Overcurrent Fault (Przetężenie / Zwarcie po stronie AC lub LOAD)": (
+            "CO TO ZNACZY: Przekroczenie prądu na wyjściu AC lub obwodzie awaryjnym LOAD (Backup).\n"
             "PROCEDURA KROK PO KROKU:\n"
-            "1. Wyłącz bezpiecznik obwodu LOAD (wyjście awaryjne) i sprawdź, czy falownik wstaje bez obciążenia domu.\n"
-            "2. Sprawdź obwody odbiorcze pod kątem zwarć L-N / L-PE oraz urządzeń o dużym prądzie rozruchowym (pompy, sprężarki)."
+            "1. Wyłącz zabezpieczenie obwodu rezerwowego LOAD i sprawdź, czy falownik wstaje bez obciążenia domu.\n"
+            "2. Sprawdź odbiorniki pod kątem zwarć L-N / L-PE oraz prądów rozruchowych."
         ),
-        "F20 / F21 - Tz_Dc_OverCurr_Fault (Przetężenie po stronie DC / BUS)": (
-            "CO TO ZNACZY: Prąd z paneli PV lub akumulatora przekroczył limit sprzętowy (lub start w trybie Off-Grid ze zbyt dużym obciążeniem).\n"
+        "F20 / F21 / F55 - DC Overcurrent / HV Bus Overvoltage": (
+            "CO TO ZNACZY: Zbyt wysoki prąd DC (PV/Bateria) lub przekroczone napięcie szyny DC BUS (Voc > 800V lub napięcie baterii za wysokie).\n"
             "PROCEDURA KROK PO KROKU:\n"
-            "1. Zmniejsz obciążenie na porcie LOAD i sprawdź nastawy Max A Charge / Discharge w Battery Setting.\n"
-            "2. Rozepnij MC4 i zmierz napięcie Uoc (<800V) oraz prąd zwarciowy Isc stringów (limit roboczy 20A/26A na MPPT)."
+            "1. Zmierz napięcie rozwarcia stringów PV (Voc nie może przekraczać 800V!).\n"
+            "2. W trybie Off-Grid zmniejsz duże obciążenie startowe i sprawdź limity prądu baterii w Battery Setting."
         ),
-        "F22 - Tz_EmergStop_Fault (Aktywowany wyłącznik PPOŻ / Zdalne wyłączenie RSD)": (
-            "CO TO ZNACZY: Otwarty obwód wyłącznika awaryjnego RSD na płycie sterującej (kostka CN2).\n"
+        "F22 - Tz_EmergStop_Fault (Aktywowany wyłącznik PPOŻ / Brak zwory RSD)": (
+            "CO TO ZNACZY: Otwarty obwód zatrzymania awaryjnego RSD / zdalnego wyłączenia.\n"
             "PROCEDURA KROK PO KROKU:\n"
-            "1. Odkręć pokrywę komory przyłączy falownika Deye.\n"
-            "2. Sprawdź kostkę RSD_input (zaciski B, B, +, -). Jeśli brak zewnętrznego wyłącznika PPOŻ, upewnij się, że fabryczna zworka jest dokręcona."
+            "1. Sprawdź złącze RSD_input wewnątrz komory komunikacyjnej.\n"
+            "2. Jeśli budynek nie ma zewnętrznego przycisku PPOŻ, upewnij się, że fabryczna zworka jest dokręcona."
         ),
-        "F16 / F23 / F24 - Tz_GFCI_OC / DC_Insulation_Fault (Prąd upływu / Błąd izolacji DC)": (
-            "CO TO ZNACZY: Przebicie prądu z paneli PV lub kabli solarnych przez wilgoć do uziemienia (Riso < 1 MOhm).\n"
+        "F16 / F23 / F24 - GFCI / DC Insulation Fault (Prąd upływu / Błąd izolacji DC)": (
+            "CO TO ZNACZY: Przebicie prądu z paneli PV lub kabli do uziemienia (wilgoć, uszkodzony MC4 lub SPD DC).\n"
             "PROCEDURA KROK PO KROKU:\n"
-            "1. Wyłącz AC i DC, wypnij wszystkie stringi z falownika.\n"
-            "2. Zmierz megaomomierzem rezystancję izolacji Riso każdego bieguna PV do uziemienia PE (norma >= 1.0 MOhm).\n"
-            "3. Wypnij wkładki ochronnika przepięć (SPD) DC w skrzynce – jeśli błąd zniknie, wymień zawilgoconą wkładkę SPD."
+            "1. Wypnij stringi i zmierz rezystancję izolacji Riso megaomomierzem (norma >= 1 MOhm) lub napięcie biegunów względem PE.\n"
+            "2. Sprawdź wkładki ochronnika przepięć SPD DC w rozdzielnicy oraz ciągłość przewodu PE obudowy."
         ),
-        "F26 - Bus_Unbalance_Fault (Niezrównoważenie szyny DC)": (
-            "CO TO ZNACZY: Duża asymetria obciążenia 3 faz lub upływ DC.\n"
+        "F26 - DC Busbar Unbalanced (Niezrównoważona szyna DC)": (
+            "CO TO ZNACZY: Bardzo duża asymetria obciążenia między 3 fazami lub upływ DC.\n"
             "PROCEDURA KROK PO KROKU:\n"
             "1. Włącz w menu Advanced Function (kod 7777) opcję 'Asymmetric phase feeding'.\n"
-            "2. Zrestartuj falownik 2-3 razy i sprawdź równowagę faz na porcie LOAD."
+            "2. Zrestartuj falownik 2-3 razy."
         ),
-        "F29 / F41 - Parallel_Comm_Fault (Błąd komunikacji równoległej CAN)": (
-            "CO TO ZNACZY: W menu włączono pracę kaskadową (Parallel), a pracuje pojedynczy falownik (lub 1 jednostka w kaskadzie się wyłączyła).\n"
+        "F29 / F41 - Parallel CAN Bus Fault / Parallel System Stop": (
+            "CO TO ZNACZY: Błąd komunikacji równoległej (kaskady) lub wyłączenie jednego z falowników w kaskadzie.\n"
             "PROCEDURA KROK PO KROKU:\n"
-            "1. Wejdź w: Advanced Function -> kod 7777 -> odznacz 'Parallel', 'Master' oraz 'Slave' przy pojedynczym falowniku."
+            "1. Przy pojedynczym falowniku: wejdź w Advanced Function (kod 7777) i odznacz 'Parallel' (Master/Slave).\n"
+            "2. W kaskadzie: sprawdź kable RJ45 w portach Parallel A/B oraz unikalne adresy Modbus SN."
         ),
-        "F35 / F42 / F47 / F48 - Błędy napięcia lub częstotliwości sieci AC (GRID)": (
-            "CO TO ZNACZY: Brak sieci na zaciskach GRID lub napięcie/częstotliwość poza zakresem normy.\n"
+        "F35 / F42 / F47 / F48 - Brak sieci AC / Napięcie lub Częstotliwość poza zakresem": (
+            "CO TO ZNACZY: Brak napięcia na kostce GRID lub parametry sieci poza normą.\n"
             "PROCEDURA KROK PO KROKU:\n"
-            "1. Zmierz napięcia L1-N, L2-N, L3-N na kostce GRID (moment dokręcenia 1.2 Nm) oraz sprawdź kolejność wirowania faz.\n"
-            "2. W menu Grid Setting sprawdź wybrany standard (EN50549) oraz aktywuj funkcję V(Q) / V(W)."
+            "1. Zmierz napięcia L1-N, L2-N, L3-N oraz międzyfazowe (400V) na listwie GRID.\n"
+            "2. Sprawdź poprawność wirowania faz oraz kod sieci w Grid Setting (EN50549)."
         ),
-        "F55 / F56 / F58 - Błędy baterii (Za wysokie/niskie napięcie DC / Brak komunikacji BMS)": (
-            "CO TO ZNACZY: Rozładowany akumulator (<40V) lub przerwana komunikacja CAN/RS485 z BMS (gdy włączone BMS_Err_Stop).\n"
+        "F56 / F58 - DC_VoltLow / BMS_Comm_Fault (Rozładowana bateria / Brak komunikacji BMS)": (
+            "CO TO ZNACZY: Napięcie baterii poniżej progu odcięcia (<40-44V) lub przerwana komunikacja CAN/RS485 z BMS.\n"
             "PROCEDURA KROK PO KROKU:\n"
-            "1. Sprawdź śruby M10 akumulatora (moment 24.5 Nm) oraz napięcie DC. Wybudź baterię przyciskiem Black Start / RST.\n"
-            "2. Sprawdź kabel RJ45 w porcie BMS 485/CAN (piny 4: CAN-H, 5: CAN-L) oraz pierścień magnetyczny (4 zwoje).\n"
-            "3. W Battery Setting zaznacz 'Activate Battery' i w razie awarii kabla tymczasowo odznacz 'BMS_Err_Stop' w Advanced Function."
+            "1. Wybudź baterię (Black Start - przytrzymaj przycisk SW/RST na magazynie przez 5s).\n"
+            "2. W menu Battery Setting włącz 'Activate Battery' oraz wymuś doładowanie z sieci ('Grid Charge').\n"
+            "3. Sprawdź kabel RJ45 w porcie BMS 485/CAN (piny 4-CAN_H, 5-CAN_L) i kod protokołu Lithium Mode (np. 00)."
         ),
-        "F64 - Heatsink_High_Temp_Fault (Przegrzanie radiatora)": (
-            "CO TO ZNACZY: Temperatura radiatora przekroczyła próg bezpieczeństwa.\n"
+        "F63 / F64 - ARC Fault / High Heatsink Temp (Łuk DC / Przegrzanie radiatora)": (
+            "CO TO ZNACZY: Wykrycie łuku elektrycznego DC (F63) lub przegrzanie radiatora >85C (F64).\n"
             "PROCEDURA KROK PO KROKU:\n"
-            "1. Sprawdź drożność wentylatorów i zachowanie odstępów montażowych (500 mm góra/dół/boki). Odczekaj 10 minut przy wyłączonym falowniku."
+            "1. Dla F63: sprawdź złącza MC4 pod kątem upalenia i wyczyść błąd w Advanced Function ('Clear Arc Fault').\n"
+            "2. Dla F64: oczyść radiator i wentylatory, odczekaj 10 minut po wyłączeniu."
         )
     },
-    "Falownik GoodWe (Seria ET Plus / BT / EH / ES / SDT G2 / XS)": {
-        "Isolation Failure / Błąd ISO (Niska rezystancja izolacji DC)": (
-            "CO TO ZNACZY: Rezystancja izolacji stringu PV do ziemi spadła poniżej normy (zwykle w deszczowe dni lub przez uszkodzony MC4/SPD).\n"
+    "Falownik GoodWe (ET / ET PLUS+ / BT / EH / ES / SDT G2 / XS)": {
+        "Isolation Failure / Błąd ISO (Rezystancja izolacji DC < 30-100 kOhm)": (
+            "CO TO ZNACZY: Zwarcie stringu PV do ziemi lub zawilgocenie złączy MC4.\n"
             "PROCEDURA KROK PO KROKU:\n"
-            "1. Odłącz wyłącznik DC, wypnij stringi i podłączaj pojedynczo, aby wskazać uszkodzony obwód.\n"
-            "2. Zmierz rezystancję izolacji do PE oraz napięcie między N a PE na zaciskach AC (musi być < 10V)."
+            "1. Odłącz stringi i podłączaj pojedynczo, aby wskazać uszkodzony obwód.\n"
+            "2. Zmierz rezystancję izolacji DC względem PE oraz sprawdź napięcie między N a PE na AC (musi być < 10V)."
         ),
-        "Ground I Failure (Kod 10 - Prąd upływowy doziemny zbyt wysoki)": (
-            "CO TO ZNACZY: Nieprawidłowe połączenie N i PE po stronie AC lub upływ z paneli do ziemi.\n"
+        "Ground I Failure (Kod 10) / Relay Check Failure (Kod 25)": (
+            "CO TO ZNACZY: Zbyt wysoki prąd upływu doziemnego lub błąd testu przekaźników AC.\n"
             "PROCEDURA KROK PO KROKU:\n"
-            "1. Zmierz multimetrem napięcie między uziemieniem a ramą falownika (powinno być bliskie 0V).\n"
-            "2. Sprawdź poprawność podłączenia żył L, N i PE we wtyczce AC oraz zewnętrzny przewód PE na obudowie (śruba M5, 1.2-2 Nm)."
+            "1. Zmierz multimetrem napięcie między uziemieniem (ramą) a przewodem N – musi być poniżej 10V.\n"
+            "2. Sprawdź poprawność podłączenia N i PE w złączu AC oraz na wyjściu Backup."
         ),
-        "Vac Failure / Fac Failure / Utility Loss (Kody 09, 17, 29 - Błędy sieci AC)": (
-            "CO TO ZNACZY: Zanik sieci AC lub napięcie (>253V) / częstotliwość poza zakresem.\n"
+        "Vac Failure / Fac Failure / Utility Loss (Kody 09, 17, 29)": (
+            "CO TO ZNACZY: Brak sieci AC lub napięcie (>253V) / częstotliwość poza zakresem.\n"
             "PROCEDURA KROK PO KROKU:\n"
-            "1. Rozkręć wtyczkę AC i sprawdź dokręcenie tulejek (luźne N powoduje skoki napięcia).\n"
-            "2. Połącz się przez SolarGo (hasło: goodwe2010 lub 1111 na LCD), ustaw właściwy kod kraju i włącz regulację mocy biernej Q(U)."
+            "1. Zmierz napięcie na wtyczce AC i dokręć zaciski N oraz fazowe.\n"
+            "2. W aplikacji SolarGo / PV Master (hasło: goodwe2010) sprawdź Safety Country (Polska EN50549) i włącz regulację mocy biernej Q(U)."
         ),
-        "Phase Sequence / Phase Angle Fault (Kody 14ETU, 27ETU - Błąd kolejności faz)": (
-            "CO TO ZNACZY: Nieprawidłowe wirowanie faz na wejściu trójfazowym AC.\n"
+        "Błąd kolejności faz (Kod 14ETU) / Błąd kąta fazowego (Kod 27ETU)": (
+            "CO TO ZNACZY: Nieprawidłowe wirowanie faz na wejściu AC falownika trójfazowego.\n"
             "PROCEDURA KROK PO KROKU:\n"
-            "1. Wyłącz zabezpieczenie AC i zamień miejscami przewody fazowe L2 i L3 we wtyczce AC falownika."
+            "1. Wyłącz zabezpieczenie AC i zamień miejscami przewody L2 i L3 we wtyczce AC falownika."
         ),
-        "Relay Check Failure (Kod 07 / 25 - Błąd testu przekaźników AC)": (
-            "CO TO ZNACZY: Przekaźniki nie przeszły autotestu (często przez wysokie napięcie N-PE > 10V).\n"
+        "BMS Loss / Błąd komunikacji z akumulatorem / Błąd testu licznika Smart Meter": (
+            "CO TO ZNACZY: Brak komunikacji z magazynem energii lub konflikt na magistrali licznika.\n"
             "PROCEDURA KROK PO KROKU:\n"
-            "1. Zmierz napięcie N-PE w sieci (<10V) oraz rezystancję N-PE na wyjściu Backup (<10 Ohm).\n"
-            "2. Zrestartuj falownik (odłącz AC i DC na min. 5 minut)."
-        ),
-        "Back-Up Over Load / Awaria wentylatora (Kod 12 / 12ETU)": (
-            "CO TO ZNACZY: Przeciążenie wyjścia rezerwowego Backup (dioda USTERKA miga pojedynczo) lub zablokowany wentylator.\n"
-            "PROCEDURA KROK PO KROKU:\n"
-            "1. Zmniejsz obciążenie podłączone pod obwód Backup (odłącz urządzenia o dużym prądzie rozruchowym) i sprawdź wentylatory."
-        ),
-        "BMS Loss / Konflikt Licznika Smart Meter (Dioda COM miga lub zgaszona)": (
-            "CO TO ZNACZY: Brak komunikacji z akumulatorem lub inteligentnym licznikiem GM3000.\n"
-            "PROCEDURA KROK PO KROKU:\n"
-            "1. Uruchom test licznika w SolarGo / PV Master (pobór z sieci musi wynosić min. 150W, a przekładniki CT A/B/C muszą być na właściwych fazach L1/L2/L3 strzałką w stronę sieci).\n"
-            "2. Jeśli BMS zakłóca licznik: odłącz wtyczkę BMS i upewnij się, że kabel BMS wykorzystuje tylko 2 wymagane piny komunikacyjne oraz ma rezystor terminujący 120 Ohm."
+            "1. Sprawdź w SolarGo/PV Master wybór modelu akumulatora oraz rezystor terminujący 120 Ohm.\n"
+            "2. Jeśli licznik nie przechodzi testu: upewnij się, że pobór z sieci > 150W, kierunek przekładników CT (strzałka House->Grid) jest właściwy."
         )
     },
-    "Pompa Ciepła ARGOM (Seria ARG-PC 6-22 kW, Automatyka CAREL) i Solar": {
+    "Pompa Ciepła ARGOM (seria ARG-PC, automatyka CAREL, kody AL001 - AL174)": {
         "AL007 / AL137 - Water flow switch / Flow switch alarm (Brak przepływu wody)": (
-            "CO TO ZNACZY: Zbyt niski przepływ wody/glikolu przez wymiennik – najczęstsza usterka eksploatacyjna.\n"
+            "CO TO ZNACZY: Zadziałał czujnik przepływu – zbyt mały przepływ wody/glikolu przez wymiennik.\n"
             "PROCEDURA KROK PO KROKU:\n"
-            "1. MANOMETR: Dopuść ciśnienie w układzie do 1.5 - 1.8 bar.\n"
-            "2. FILTRY: Zakręć zawory i wyczyść filtr siatkowy (skośny) oraz separator magnetyczny z czarnego szlamu.\n"
-            "3. ODPOWIETRZENIE: Odpowietrz układ oraz pompę obiegową, upewnij się że min. 2 pętle grzewcze są otwarte na stałe."
+            "1. Sprawdź ciśnienie na manometrze (dopuść do 1.5 - 1.8 bar) i odpowietrz instalację.\n"
+            "2. Wyczyść filtr siatkowy (skośny) oraz separator magnetyczny ze szlamu!\n"
+            "3. Sprawdź pracę pompy obiegowej i upewnij się, że zawory/pętle CO są otwarte."
         ),
-        "AL138 / AL139 / AL140 - High/Low temp. alarm / Temp. delta alarm (Delta T > 8 st.C)": (
-            "CO TO ZNACZY: Woda wylotowa >62 st.C (AL138), <5 st.C (AL139 - antyzamarzanie) lub zbyt duża różnica Zasilanie-Powrót >8 st.C (AL140).\n"
+        "AL138 / AL139 / AL140 - High temp (>62C) / Low temp (<5C) / Temp.delta alarm (Delta T >8C)": (
+            "CO TO ZNACZY: Przekroczenie temperatur granicznych wody wylotowej lub zbyt duża różnica Zasilanie-Powrót.\n"
             "PROCEDURA KROK PO KROKU:\n"
-            "1. Wyczyść filtr siatkowy i separator magnetyczny (zdławiony przepływ powoduje skok Delty T).\n"
-            "2. Zwiększ bieg pompy obiegowej i sprawdź stężenie glikolu refraktometrem (zbyt gęsty glikol <-35 st.C dławi przepływ)."
+            "1. Wyczyść filtr wody i odpowietrz układ – zdławiony przepływ powoduje skok Delty T powyżej 8 st.C.\n"
+            "2. Zwiększ bieg pompy obiegowej i sprawdź stężenie glikolu."
         ),
-        "AL003..AL006 / AL130..AL136 - Błędy czujników temperatury i przetworników ciśnienia": (
-            "CO TO ZNACZY: AL003 (powrót wody), AL004 (zasilanie wody), AL005 (otoczenie), AL006 (wężownica), AL130 (tłoczenie), AL131 (ssanie), AL132 (ciśn. HP), AL133 (ciśn. LP), AL134 (zasobnik CWU), AL135/136 (układ EVI).\n"
+        "AL003 / AL004 / AL005 / AL006 / AL134 - Błędy czujników temp. wody, otoczenia, wymiennika i CWU": (
+            "CO TO ZNACZY: AL003=powrót (Inlet), AL004=zasilanie (Outlet), AL005=zewnętrzny (Ambient), AL006=wężownica (Condenser), AL134=zasobnik CWU.\n"
             "PROCEDURA KROK PO KROKU:\n"
-            "1. Sprawdź wtyczki sondy na płycie sterownika CAREL.\n"
-            "2. Zmierz rezystancję czujnika NTC omomierzem. W razie przerwy lub zwarcia wymień czujnik z magazynu w busie."
+            "1. Sprawdź podłączenie wtyczek czujników na płycie sterownika CAREL.\n"
+            "2. Zmierz rezystancję sondy omomierzem (przerwa lub zwarcie oznacza konieczność wymiany czujnika NTC)."
         ),
-        "AL001 / AL002 / AL008 / AL152 - Zasilanie, kolejność faz i pamięć EEPROM CAREL": (
-            "CO TO ZNACZY: AL001/AL002 (błąd zapisu pamięci EEPROM), AL008 (błąd kolejności lub zaniku faz w modelach 3F), AL152 (niestabilne napięcie zasilania).\n"
+        "AL008 / AL152 - Phase sequ.prot.alarm / Supply power error (Błąd faz lub zasilania)": (
+            "CO TO ZNACZY: Błąd kolejności/zaniku faz (w modelach 3-fazowych) lub niestabilne napięcie sieci.\n"
             "PROCEDURA KROK PO KROKU:\n"
-            "1. Przy AL001/AL002: odłącz zasilanie pompy bezpiecznikiem na 3-5 minut i uruchom ponownie.\n"
-            "2. Przy AL008: zmierz napięcia międzyfazowe 400V w rozdzielnicy; jeśli wszystkie 3 fazy są obecne, zamień miejscami dwie fazy zasilające (L1 z L2)."
+            "1. Zmierz napięcia fazowe w rozdzielnicy (sprawdź bezpieczniki).\n"
+            "2. W modelach 3-fazowych zamień miejscami dwie fazy na listwie zasilającej."
+        )
+    },
+    "Kolektory Słoneczne (Solar) / Sterowniki Tech / Geco / Hewalex": {
+        "Zapowietrzenie układu / Duża Delta T (T1 > 110C, T2 < 35C)": (
+            "CO TO ZNACZY: Pompa solarna pracuje, ale glikol nie krąży (poduszka powietrzna na dachu lub zużyty glikol).\n"
+            "PROCEDURA KROK PO KROKU:\n"
+            "1. Podłącz pompę serwisową i przepłucz układ pod ciśnieniem do całkowitego usunięcia powietrza.\n"
+            "2. Sprawdź ciśnienie wstępne naczynia przeponowego (zwykle 1.5 - 2.0 bar) oraz drożność grupy pompowej."
         ),
-        "AL009 / AL010 / AL011 / AL012 - Ostrzeżenia o czasie pracy podzespołów (Przegląd)": (
-            "CO TO ZNACZY: Przekroczony licznik godzin pracy jednostki (AL009), pompy wody (AL010), sprężarki (AL011) lub wentylatora (AL012).\n"
+        "Uszkodzony czujnik temperatury kolektora PT1000 / NTC (Błąd czujnika T1/T2)": (
+            "CO TO ZNACZY: Przerwana żyła przewodu na dachu (np. przez ptaki/kuny) lub uszkodzona sonda po przegrzaniu.\n"
             "PROCEDURA KROK PO KROKU:\n"
-            "1. Wykonaj pełny przegląd konserwacyjny urządzenia i zresetuj licznik przeglądowy w menu serwisowym sterownika CAREL."
-        ),
-        "AL013..AL151 / AL035..AL129 / AL153..AL174 - Układ chłodniczy R32, EEV/EVI, Inwerter Power+": (
-            "CO TO ZNACZY: Praca sprężarki Panasonic poza obwiednią Envelope (AL035-AL129), błąd zaworu rozprężnego EEV/EVI (AL013-AL151), alarm modułu inwertera Power+ (AL051-AL114) lub wentylatora (AL153-AL174).\n"
-            "PROCEDURA KROK PO KROKU:\n"
-            "1. Odłącz zasilanie pompy na pełne 5 minut w celu zresetowania falownika Power+ i pozycjonowania krokowego zaworu EEV.\n"
-            "2. Sprawdź czystość parownika (brak oblodzenia) oraz poprawność ilości czynnika R32."
+            "1. Odepnij czujnik ze sterownika i zmierz rezystancję (PT1000 ma ~1000 Ohm w 0C i ~1078 Ohm w 20C).\n"
+            "2. Wymień czujnik na wysokotemperaturowy (silikonowy) i zabezpiecz przewód w peszlu UV."
         )
     }
 }
 
+PRAKTYCZNE_WSKAZOWKI_FORUM = [
+    {
+        "tagi": ["f08", "deye", "gfdi", "uziemienie", "n-pe", "load", "wyspa"],
+        "tytul": "Praktyka z terenu: Błąd F08 w Deye przy przełączaniu na Backup",
+        "opis": "Najczęstsza przyczyna na polskich instalacjach: brak zaznaczonej opcji 'Signal Island Mode' w menu Advanced Function (kod 7777) lub luźny przewód PE obudowy. Gdy sieć zanika, falownik rozłącza przekaźnik sieciowy i traci uziemienie punktu N – włączenie Signal Island Mode zwiera wewnętrznie N z PE w trybie wyspowym."
+    },
+    {
+        "tagi": ["al007", "al137", "argom", "przepływ", "flow", "e01", "kolejność faz", "delta"],
+        "tytul": "Praktyka z terenu: Argom AL007 / AL137 mimo czystego filtra",
+        "opis": "Jeśli filtr siatkowy i magnetyczny są czyste, a nadal wybija AL007: 1) Sprawdź czy zawór 3-drogowy CWU/CO nie zablokował się w pozycji pośredniej, 2) Sprawdź odpowietrznik na górze wymiennika płytowego wewnątrz jednostki, 3) Przy świeżym montażu 3-fazowym sprawdź kolejność faz (E01/AL008)."
+    },
+    {
+        "tagi": ["goodwe", "smart meter", "licznik", "ct", "test", "bms", "faza"],
+        "tytul": "Praktyka z terenu: GoodWe ET/BT nie przechodzi testu licznika (Meter Test Fail)",
+        "opis": "Trzy klasyczne pułapki: 1) W domu podczas testu musi być włączony odbiornik o mocy min. 150-200W na każdej fazie (np. czajnik/farelka), 2) Przekładniki CT muszą być założone na tych samych fazach L1-L1, L2-L2, L3-L3 co zasilanie falownika i samego licznika, 3) Strzałka na przekładniku CT musi wskazywać kierunek KUPOWANIA energii (w stronę sieci/licznika operatora)."
+    },
+    {
+        "tagi": ["solar", "glikol", "zapowietrzenie", "t1", "naczynie", "pompka", "cieknie"],
+        "tytul": "Praktyka z terenu: Solary zapowietrzają się ponownie po tygodniu od serwisu",
+        "opis": "Jeśli po odpowietrzeniu układ znów staje po kilku dniach: 1) Dziurawa membrana w naczyniu przeponowym (po naciśnięciu wentyla samochodowego na dole naczynia leci glikol zamiast powietrza), 2) Nieszczelny automatyczny odpowietrznik na dachu zasysa powietrze gdy układ stygnie w nocy (warto zakręcić zaworek kulowy pod odpowietrznikiem po odpowietrzeniu!)."
+    },
+    {
+        "tagi": ["f56", "f58", "bateria", "magazyn", "rozładowany", "black start", "deye"],
+        "tytul": "Praktyka z terenu: Martwy magazyn energii (błąd F56 / F58 w Deye)",
+        "opis": "Gdy bateria zjedzie poniżej 42V i BMS odetnie wyjście: odłącz obciążenie LOAD, wejdź w Battery Setting -> zaznacz 'Activate Battery' oraz w Time of Use zaznacz 'Grid Charge' na 100%. Przytrzymaj przycisk RST/SW na baterii przez 5 sekund aż zamrugają diody RUN – falownik od razu złapie napięcie i zacznie ładować z sieci."
+    }
+]
+
+INSTRUKCJE_KONFIGURACJI_TEXT = """
+### 📶 1. Podłączenie do Internetu (Wi-Fi 2.4 GHz) i Aplikacje Mobilne
+* **Falowniki Deye (Deye Cloud / SOLARMAN Smart):**
+  1. Upewnij się, że router klienta nadaje w pasmie **2.4 GHz**.
+  2. Połącz telefon z siecią Wi-Fi modułu loggera: **`AP_XXXXXXXXX`** (gdzie X to S/N loggera). Domyślne hasło: **`12345678`**.
+  3. Otwórz przeglądarkę i wejdź na **`http://10.10.100.254`** (login: `admin`, hasło: `admin`).
+  4. W zakładce **Wizard / Wi-Fi STA** wybierz domową sieć Wi-Fi, wpisz hasło i zrestartuj moduł.
+* **Falowniki GoodWe (SolarGo / PV Master / SEMS Portal):**
+  1. Naciśnij krótko przycisk Wi-Fi Reload na falowniku (lub użyj menu LCD `W/L Reset`).
+  2. Połącz telefon z siecią **`Solar-WiFiXXXXXXXX`**. Hasło domyślne: **`12345678`**.
+  3. Otwórz aplikację **SolarGo** lub **PV Master** (hasło instalatora: **`goodwe2010`**) albo wejdź na **`http://10.10.100.253`**.
+
+### 🛠️ 2. Rutynowa Konserwacja i Bezpieczeństwo (Standard Serwisowy)
+* **Zasada 5 minut:** Przed pracami wyłącz AC, DC i baterię oraz **odczekaj min. 5 minut**.
+* **Momenty dokręcania:** Deye śruby aku M10: **24,5 Nm**, zaciski AC: **1,2 Nm**.
+* **Hasła serwisowe Deye (Ekran LCD):** Ustawienia zaawansowane: **`7777`** | Reset fabryczny: **`9999`**.
+"""
+
 POSTAL_PREFIX_COORDS = {
     "00": (52.23, 21.01), "01": (52.25, 20.95), "02": (52.18, 21.00), "03": (52.27, 21.08),
-    "04": (52.22, 21.15), "05": (52.12, 20.88), "06": (52.88, 20.61), "07": (52.60, 21.80),
+    "04": (52.22, 21.15), "05": (52.08, 20.85), "06": (52.88, 20.61), "07": (52.60, 21.80),
     "08": (52.16, 22.28), "09": (52.55, 19.70), "10": (53.78, 20.48), "11": (54.03, 21.00),
     "12": (53.60, 21.50), "13": (53.35, 19.90), "14": (53.85, 19.80), "15": (53.13, 23.16),
     "16": (53.65, 23.10), "17": (52.75, 23.40), "18": (53.18, 22.06), "19": (53.83, 22.35),
@@ -225,3 +234,65 @@ POSTAL_PREFIX_COORDS = {
     "93": (51.71, 19.47), "94": (51.74, 19.38), "95": (51.88, 19.35), "96": (51.96, 20.15),
     "97": (51.40, 19.70), "98": (51.60, 18.95), "99": (52.10, 19.25)
 }
+
+def przeszukaj_lokalne_instrukcje(zapytanie, folder_sciezka="."):
+    """Przeszukuje wszystkie pliki PDF i TXT w katalogu oraz w podfolderze instrukcje/."""
+    q = str(zapytanie).strip().lower()
+    if len(q) < 2:
+        return []
+    wyniki = []
+    for urzadzenie, bledy in DIAGNOSTYKA_BAZA.items():
+        for kod, opis in bledy.items():
+            if q in kod.lower() or q in opis.lower() or q in urzadzenie.lower():
+                wyniki.append({
+                    "zrodlo": f"📘 Baza Wewnętrzna: {urzadzenie}",
+                    "naglowek": kod,
+                    "fragment": opis
+                })
+
+    search_dirs = [folder_sciezka]
+    inst_sub = os.path.join(folder_sciezka, "instrukcje")
+    if os.path.isdir(inst_sub):
+        search_dirs.append(inst_sub)
+
+    if pypdf is not None:
+        for s_dir in search_dirs:
+            try:
+                for fname in os.listdir(s_dir):
+                    if fname.lower().endswith(".pdf"):
+                        fpath = os.path.join(s_dir, fname)
+                        try:
+                            reader = pypdf.PdfReader(fpath)
+                            for p_idx, page in enumerate(reader.pages):
+                                txt = page.extract_text() or ""
+                                if q in txt.lower():
+                                    pos = txt.lower().find(q)
+                                    start = max(0, pos - 140)
+                                    end = min(len(txt), pos + 260)
+                                    snippet = re.sub(r'\s+', ' ', txt[start:end]).strip()
+                                    wyniki.append({
+                                        "zrodlo": f"📄 Plik PDF: {fname}",
+                                        "naglowek": f"Strona {p_idx + 1}",
+                                        "fragment": f"...{snippet}..."
+                                    })
+                                    if len(wyniki) >= 15:
+                                        return wyniki
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+    return wyniki
+
+def przeszukaj_praktyke_i_internet(zapytanie):
+    """Zwraca praktyczne porady z terenu oraz bezpośrednie linki do wyszukiwania w Google / Forach OZE."""
+    q = str(zapytanie).strip().lower()
+    trafienia = []
+    for p in PRAKTYCZNE_WSKAZOWKI_FORUM:
+        if any(t in q for t in p["tagi"]) or q in p["tytul"].lower() or q in p["opis"].lower():
+            trafienia.append(p)
+    encoded_q = urllib.parse.quote_plus(f"{zapytanie} serwis naprawa forum OZE")
+    encoded_yt = urllib.parse.quote_plus(f"{zapytanie} fault repair tutorial")
+    link_google = f"https://www.google.com/search?q={encoded_q}"
+    link_elektroda = f"https://www.google.com/search?q=site:elektroda.pl+{encoded_q}"
+    link_yt = f"https://www.youtube.com/results?search_query={encoded_yt}"
+    return trafienia, link_google, link_elektroda, link_yt
